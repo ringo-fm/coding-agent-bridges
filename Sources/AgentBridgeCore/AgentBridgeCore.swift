@@ -50,6 +50,10 @@ public struct AgentGenerationRequest: Sendable, Equatable {
     public let maximumOutputTokens: Int?
     public let temperature: Double?
     public let topP: Double?
+    public let conversationKey: String?
+    public let contextFingerprint: String?
+    public let resultingContextFingerprint: String?
+    public let incrementalMessages: [AgentMessage]?
 
     public init(
         model: String,
@@ -58,7 +62,11 @@ public struct AgentGenerationRequest: Sendable, Equatable {
         stream: Bool = false,
         maximumOutputTokens: Int? = nil,
         temperature: Double? = nil,
-        topP: Double? = nil
+        topP: Double? = nil,
+        conversationKey: String? = nil,
+        contextFingerprint: String? = nil,
+        resultingContextFingerprint: String? = nil,
+        incrementalMessages: [AgentMessage]? = nil
     ) {
         self.model = model
         self.messages = messages
@@ -67,6 +75,10 @@ public struct AgentGenerationRequest: Sendable, Equatable {
         self.maximumOutputTokens = maximumOutputTokens
         self.temperature = temperature
         self.topP = topP
+        self.conversationKey = conversationKey
+        self.contextFingerprint = contextFingerprint
+        self.resultingContextFingerprint = resultingContextFingerprint
+        self.incrementalMessages = incrementalMessages
     }
 }
 
@@ -87,4 +99,17 @@ public struct AgentGenerationResult: Sendable, Equatable {
         self.inputTokens = inputTokens
         self.outputTokens = outputTokens
     }
+}
+
+public enum AgentStreamEvent: Sendable, Equatable {
+    case textDelta(String)
+    case toolCall(AgentToolCall)
+    case completed(AgentGenerationResult)
+}
+
+public enum AgentBackendError: Error, Sendable, Equatable {
+    case unavailable(String)
+    case contextTooLarge(limit: Int)
+    case cancelled
+    case generationFailed(String)
 }

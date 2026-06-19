@@ -1,0 +1,28 @@
+# Add this to ~/.codex/config.toml (or merge with your existing config).
+#
+# Then export your bridge API key:
+#   export AFM_BRIDGE_API_KEY=dev
+# Optional staged tool profile:
+#   export AFM_BRIDGE_PROFILE=codex-tools
+# and start the bridge:
+#   swift run codex-afm-bridge
+#
+# Point Codex at the local model by selecting `apple-foundation-local`.
+
+model = "apple-foundation-local"
+model_provider = "apple_fm"
+
+# Apple Foundation Models do not emit OpenAI-style reasoning summaries.
+model_reasoning_summary = "none"
+model_supports_reasoning_summaries = false
+
+[model_providers.apple_fm]
+name = "Apple Foundation Models Local Bridge"
+base_url = "http://127.0.0.1:8765/v1"
+wire_api = "responses"
+env_key = "AFM_BRIDGE_API_KEY"
+request_max_retries = 0
+stream_max_retries = 0
+stream_idle_timeout_ms = 600000
+supports_websockets = false
+

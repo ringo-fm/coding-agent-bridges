@@ -44,4 +44,23 @@ ClaudeAFMBridge -> ClaudeAdapter -+-> AFMBackend
 
 Import the latest source snapshots from `ringo-fm/codex-bridge` and `ringo-fm/claude-bridge` incrementally. Preserve behavior first through tests, then extract shared implementation behind the target boundaries.
 
-The original repositories remain the historical record unless a simple local `git subtree` migration is performed before substantial development continues here.
+The snapshot strategy is final. The monorepo already contained its package and
+architecture history before source migration began, so combining histories now
+would add risk without improving traceability. The standalone repositories remain
+the permanent record for pre-migration commits.
+
+The original repositories remain the historical record and will be archived only
+after parity and live end-to-end validation are complete.
+
+## Context storage
+
+Context handling has three modes selected by `AFM_BRIDGE_CONTEXT_MODE`:
+
+- `off`: stateless compatibility behavior
+- `memory`: process-local context ledger and retrieval (default)
+- `persistent`: SQLite WAL storage with FTS5 retrieval
+
+Persistent storage is opt-in. Its default location is
+`~/Library/Application Support/coding-agent-bridges/context.sqlite3`; startup fails
+instead of silently downgrading when an explicitly requested database cannot be
+opened or migrated.

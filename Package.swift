@@ -20,9 +20,16 @@ let package = Package(
             url: "https://github.com/hummingbird-project/hummingbird.git",
             from: "2.25.0"
         ),
+        .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0"),
+        .package(url: "https://github.com/apple/swift-http-types.git", from: "1.3.0"),
+        .package(url: "https://github.com/apple/swift-log.git", from: "1.6.0"),
+        .package(url: "https://github.com/apple/swift-nio.git", from: "2.86.0"),
     ],
     targets: [
-        .target(name: "AgentBridgeCore"),
+        .target(
+            name: "AgentBridgeCore",
+            linkerSettings: [.linkedLibrary("sqlite3")]
+        ),
         .target(
             name: "AFMBackend",
             dependencies: ["AgentBridgeCore"]
@@ -32,6 +39,8 @@ let package = Package(
             dependencies: [
                 "AgentBridgeCore",
                 .product(name: "Hummingbird", package: "hummingbird"),
+                .product(name: "HTTPTypes", package: "swift-http-types"),
+                .product(name: "NIOCore", package: "swift-nio"),
             ]
         ),
         .target(
@@ -40,6 +49,11 @@ let package = Package(
                 "AgentBridgeCore",
                 "AFMBackend",
                 "BridgeHTTP",
+                .product(name: "Hummingbird", package: "hummingbird"),
+                .product(name: "HummingbirdCore", package: "hummingbird"),
+                .product(name: "HTTPTypes", package: "swift-http-types"),
+                .product(name: "Logging", package: "swift-log"),
+                .product(name: "NIOCore", package: "swift-nio"),
             ]
         ),
         .target(
@@ -48,19 +62,50 @@ let package = Package(
                 "AgentBridgeCore",
                 "AFMBackend",
                 "BridgeHTTP",
+                .product(name: "Hummingbird", package: "hummingbird"),
+                .product(name: "HTTPTypes", package: "swift-http-types"),
+                .product(name: "Logging", package: "swift-log"),
+                .product(name: "NIOCore", package: "swift-nio"),
             ]
         ),
         .executableTarget(
             name: "CodexAFMBridge",
-            dependencies: ["CodexAdapter"]
+            dependencies: [
+                "CodexAdapter",
+                "AgentBridgeCore",
+                .product(name: "Logging", package: "swift-log"),
+            ]
         ),
         .executableTarget(
             name: "ClaudeAFMBridge",
-            dependencies: ["ClaudeAdapter"]
+            dependencies: [
+                "ClaudeAdapter",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "Hummingbird", package: "hummingbird"),
+            ]
         ),
         .testTarget(
             name: "AgentBridgeCoreTests",
             dependencies: ["AgentBridgeCore"]
+        ),
+        .testTarget(
+            name: "AFMBackendTests",
+            dependencies: ["AFMBackend", "AgentBridgeCore"]
+        ),
+        .testTarget(
+            name: "CodexAdapterTests",
+            dependencies: [
+                "CodexAdapter",
+                .product(name: "HummingbirdTesting", package: "hummingbird"),
+            ]
+        ),
+        .testTarget(
+            name: "ClaudeAdapterTests",
+            dependencies: [
+                "ClaudeAdapter",
+                .product(name: "HummingbirdTesting", package: "hummingbird"),
+                .product(name: "HTTPTypes", package: "swift-http-types"),
+            ]
         ),
     ]
 )
