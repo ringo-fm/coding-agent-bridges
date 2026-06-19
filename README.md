@@ -70,6 +70,7 @@ cannot be opened or migrated.
 
 ## Status
 
-The standalone Codex and Claude implementations and their 117 unit/contract tests
-have been migrated. Shared runtime, context planning, and persistent retrieval are
-being integrated before live agent validation and repository cutover.
+The standalone Codex and Claude implementations and their unit/contract tests have
+been migrated. Shared runtime, context planning, structured compaction, persistent
+retrieval, session reuse, and staged Claude tool-schema ingestion are implemented.
+Live agent validation and repository cutover remain in progress.

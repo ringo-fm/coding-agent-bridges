@@ -89,6 +89,10 @@ let package = Package(
             dependencies: ["AgentBridgeCore"]
         ),
         .testTarget(
+            name: "AFMBackendTests",
+            dependencies: ["AFMBackend", "AgentBridgeCore"]
+        ),
+        .testTarget(
             name: "CodexAdapterTests",
             dependencies: [
                 "CodexAdapter",

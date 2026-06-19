@@ -7,6 +7,19 @@ struct ParsedToolCall {
 }
 
 enum ToolMapper {
+    static func buildCompactToolCatalog(tools: [ToolDefinition]) -> String {
+        "Available tools:\n" + tools.map(\.compactSummary).joined(separator: "\n") + """
+
+
+        Choose one exact tool name only when execution is required. Otherwise respond with final text.
+        Do not generate arguments during tool selection.
+        """
+    }
+
+    static func buildSelectedToolPrompt(_ tool: ToolDefinition) -> String {
+        tool.selectedSchemaPrompt
+    }
+
     static func buildToolPrompt(tools: [ToolDefinition]) -> String {
         var s = "Available tools:\n"
         for tool in tools {
@@ -66,4 +79,3 @@ enum ToolMapper {
         return "toolu_afm_" + String(ms, radix: 32) + String(rand, radix: 32)
     }
 }
-

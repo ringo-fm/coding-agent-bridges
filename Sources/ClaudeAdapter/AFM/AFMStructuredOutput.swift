@@ -15,3 +15,16 @@ struct ToolCallIntent {
     var arguments: String
 }
 
+@Generable(description: "Choose whether to answer with text or call exactly one advertised tool. Never invent a tool name.")
+struct ToolRoutingDecision {
+    @Guide(description: "Final text response when no tool is required.")
+    var text: String?
+    @Guide(description: "Exact advertised tool name when a tool is required.")
+    var toolName: String?
+}
+
+@Generable(description: "Arguments for one already-selected tool.")
+struct SelectedToolArguments {
+    @Guide(description: "A valid JSON object matching the selected tool schema.")
+    var arguments: String
+}

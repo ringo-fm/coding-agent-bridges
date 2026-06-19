@@ -128,7 +128,10 @@ public enum Routes {
                 temperature: body.temperature,
                 maxOutputTokens: body.max_output_tokens,
                 topP: body.top_p,
-                toolRegistry: toolRegistry
+                toolRegistry: toolRegistry,
+                conversationKey: prepared.sessionKey,
+                sessionFingerprint: prepared.sessionFingerprint,
+                incrementalPrompt: prepared.incrementalPrompt
             )
 
             if stream {

@@ -17,9 +17,11 @@ public enum AFMBackendStatus: Sendable, Equatable {
 
 public final class FoundationModelsBackend: AgentModelBackend, Sendable {
     private let model: SystemLanguageModel
+    private let sessionPool: AFMSessionPool
 
-    public init() {
+    public init(sessionPoolConfiguration: AFMSessionPoolConfiguration = .init()) {
         model = .default
+        sessionPool = AFMSessionPool(model: model, configuration: sessionPoolConfiguration)
     }
 
     public var contextSize: Int { model.contextSize }
@@ -52,15 +54,28 @@ public final class FoundationModelsBackend: AgentModelBackend, Sendable {
     public func generate(_ request: AgentGenerationRequest) async throws -> AgentGenerationResult {
         try requireAvailable()
         let components = Self.render(request.messages)
-        let session = Self.session(model: model, instructions: components.instructions)
         do {
             try Task.checkCancellation()
-            let response = try await session.respond(to: components.prompt, options: Self.options(request))
+            let text: String
+            if let key = request.conversationKey {
+                let incremental = request.incrementalMessages.map(Self.render)?.prompt
+                text = try await sessionPool.respond(
+                    key: key,
+                    fingerprint: request.contextFingerprint ?? ConversationFingerprint.digest(components.instructions),
+                    instructions: components.instructions,
+                    fullPrompt: components.prompt,
+                    incrementalPrompt: incremental,
+                    options: Self.options(request)
+                )
+            } else {
+                let session = Self.session(model: model, instructions: components.instructions)
+                text = try await session.respond(to: components.prompt, options: Self.options(request)).content
+            }
             try Task.checkCancellation()
             let inputTokens = await countTokens(components.instructions + "\n\n" + components.prompt)
-            let outputTokens = await countTokens(response.content)
+            let outputTokens = await countTokens(text)
             return AgentGenerationResult(
-                text: response.content,
+                text: text,
                 inputTokens: inputTokens,
                 outputTokens: outputTokens
             )

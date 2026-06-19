@@ -1,5 +1,7 @@
 import Foundation
 import FoundationModels
+import AgentBridgeCore
+import AFMBackend
 
 /// A normalized request to the AFM runtime. Independent of FoundationModels
 /// types so the translator layer stays decoupled.
@@ -13,6 +15,9 @@ public struct AFMGenerateRequest: Sendable {
     public let maxOutputTokens: Int?
     public let topP: Double?
     public let toolRegistry: BridgedToolRegistry?
+    public let conversationKey: String?
+    public let sessionFingerprint: String?
+    public let incrementalPrompt: String?
 
     public init(
         responseID: String,
@@ -23,7 +28,10 @@ public struct AFMGenerateRequest: Sendable {
         temperature: Double? = nil,
         maxOutputTokens: Int? = nil,
         topP: Double? = nil,
-        toolRegistry: BridgedToolRegistry? = nil
+        toolRegistry: BridgedToolRegistry? = nil,
+        conversationKey: String? = nil,
+        sessionFingerprint: String? = nil,
+        incrementalPrompt: String? = nil
     ) {
         self.responseID = responseID
         self.model = model
@@ -34,6 +42,9 @@ public struct AFMGenerateRequest: Sendable {
         self.maxOutputTokens = maxOutputTokens
         self.topP = topP
         self.toolRegistry = toolRegistry
+        self.conversationKey = conversationKey
+        self.sessionFingerprint = sessionFingerprint
+        self.incrementalPrompt = incrementalPrompt
     }
 }
 
@@ -76,9 +87,11 @@ public struct AFMStreamSnapshot: Sendable {
 /// creates a fresh `LanguageModelSession` per request (stateless MVP).
 public final class AFMRuntime: Sendable {
     private let model: SystemLanguageModel
+    private let sharedBackend: FoundationModelsBackend
 
     public init() {
         self.model = SystemLanguageModel.default
+        self.sharedBackend = FoundationModelsBackend()
     }
 
     // MARK: - Availability & limits
@@ -127,6 +140,35 @@ public final class AFMRuntime: Sendable {
 
     public func generate(_ request: AFMGenerateRequest) async throws -> AFMGenerateResult {
         try AFMAvailabilityProbe.requireAvailable()
+
+        if request.toolRegistry == nil {
+            do {
+                var messages: [AgentMessage] = []
+                if let instructions = request.instructions, !instructions.isEmpty {
+                    messages.append(AgentMessage(role: .system, text: instructions))
+                }
+                messages.append(AgentMessage(role: .user, text: request.prompt))
+                let incremental = request.incrementalPrompt.map { [AgentMessage(role: .user, text: $0)] }
+                let result = try await sharedBackend.generate(AgentGenerationRequest(
+                    model: request.model,
+                    messages: messages,
+                    stream: false,
+                    maximumOutputTokens: request.maxOutputTokens,
+                    temperature: request.temperature,
+                    topP: request.topP,
+                    conversationKey: request.conversationKey,
+                    contextFingerprint: request.sessionFingerprint,
+                    incrementalMessages: incremental
+                ))
+                return AFMGenerateResult(
+                    text: result.text,
+                    inputTokens: result.inputTokens,
+                    outputTokens: result.outputTokens
+                )
+            } catch let error as AgentBackendError {
+                throw Self.map(error)
+            }
+        }
 
         let session = makeSession(instructions: request.instructions, tools: request.toolRegistry)
         let options = makeOptions(
@@ -243,6 +285,15 @@ public final class AFMRuntime: Sendable {
             return .generationFailed(String(describing: error))
         }
     }
+
+    private static func map(_ error: AgentBackendError) -> BridgeError {
+        switch error {
+        case .unavailable(let reason): .afmUnavailable(reason: reason)
+        case .contextTooLarge(let limit): .contextTooLarge(inputTokens: -1, limit: limit)
+        case .cancelled: .generationCancelled
+        case .generationFailed(let message): .generationFailed(message)
+        }
+    }
 }
 
 /// Holds a `ResponseStream` and its `LanguageModelSession` alive across an
@@ -257,4 +308,3 @@ private final class StreamBox: @unchecked Sendable {
         self.session = session
     }
 }
-

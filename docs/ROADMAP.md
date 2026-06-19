@@ -1,8 +1,9 @@
 # Coding Agent Bridges Roadmap
 
-Implementation is in progress on `feat/implement-roadmap`. Source migration and
-the initial shared context/SQLite foundation are complete; unchecked items remain
-acceptance gates rather than claims about current behavior.
+Implementation is in progress on `feat/implement-roadmap`. Source migration,
+shared context/SQLite, structured compaction, non-streaming session reuse, and
+staged Claude tool schemas are implemented; unchecked items remain acceptance
+gates rather than claims about current behavior.
 
 This roadmap consolidates the open issues across the three bridge repositories. The monorepo is the future source of truth; the standalone repositories remain authoritative until migration parity and end-to-end validation are complete.
 

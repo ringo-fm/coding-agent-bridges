@@ -24,6 +24,35 @@ struct ToolDefinition: Decodable {
         }
         return s
     }
+
+    var compactSummary: String {
+        var value = "- \(name)"
+        if let description, !description.isEmpty {
+            value += ": " + String(description.prefix(160))
+        }
+        return value
+    }
+
+    var selectedSchemaPrompt: String {
+        var lines = ["Selected tool: \(name)"]
+        if let description, !description.isEmpty { lines.append("Description: \(description)") }
+        lines.append("Input schema:")
+        lines.append("type: \(inputSchema?.type ?? "object")")
+        if let properties = inputSchema?.properties {
+            for key in properties.keys.sorted() {
+                guard let property = properties[key] else { continue }
+                let required = inputSchema?.required?.contains(key) ?? false
+                var line = "- \(key): \(property.type ?? "any")"
+                if required { line += " (required)" }
+                if let description = property.description, !description.isEmpty {
+                    line += " — \(description)"
+                }
+                lines.append(line)
+            }
+        }
+        lines.append("Return only a JSON object in the arguments field. Do not call or execute the tool.")
+        return lines.joined(separator: "\n")
+    }
 }
 
 struct ToolInputSchema: Decodable {
@@ -45,4 +74,3 @@ struct ToolDefinitions: Decodable {
         self.tools = try c.decode([ToolDefinition].self)
     }
 }
-

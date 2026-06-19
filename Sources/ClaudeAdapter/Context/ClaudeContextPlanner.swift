@@ -6,6 +6,9 @@ struct PreparedClaudeContext: Sendable {
     let plan: ContextPlan
     let instructions: String
     let prompt: String
+    let sessionKey: String
+    let sessionFingerprint: String
+    let incrementalPrompt: String
 }
 
 enum ClaudeContextPlanner {
@@ -61,7 +64,15 @@ enum ClaudeContextPlanner {
         }
 
         let reserve = min(max(request.maxTokens ?? 512, 128), max(128, contextSize / 2))
-        let plan = ContextPlanner.plan(segments: segments, budget: max(256, contextSize - reserve))
+        let budget = max(256, contextSize - reserve)
+        let initialPlan = ContextPlanner.plan(segments: segments, budget: budget)
+        segments = try await ContextCompaction.addCapsuleIfNeeded(
+            to: segments,
+            initialPlan: initialPlan,
+            conversationID: conversation.id,
+            ledger: ledger
+        )
+        let plan = ContextPlanner.plan(segments: segments, budget: budget)
         let instructionKinds: Set<ContextSegmentKind> = [.instruction, .requiredTool, .summary]
         let instructions = plan.segments.filter { instructionKinds.contains($0.kind) }.map(\.text).joined(separator: "\n\n")
         let prompt = plan.segments.filter { !instructionKinds.contains($0.kind) }.map(\.text).joined(separator: "\n")
@@ -69,7 +80,10 @@ enum ClaudeContextPlanner {
             conversation: conversation,
             plan: plan,
             instructions: instructions.isEmpty ? TranscriptBuilder.header : instructions,
-            prompt: prompt.isEmpty ? "[user] Continue." : prompt
+            prompt: prompt.isEmpty ? "[user] Continue." : prompt,
+            sessionKey: conversation.id,
+            sessionFingerprint: baseFingerprint,
+            incrementalPrompt: segments.last(where: { $0.kind == .currentRequest })?.text ?? prompt
         )
     }
 
@@ -87,7 +101,7 @@ enum ClaudeContextPlanner {
             ))
         }
         if let tools = request.tools, !tools.isEmpty {
-            let catalog = ToolMapper.buildToolPrompt(tools: tools)
+            let catalog = ToolMapper.buildCompactToolCatalog(tools: tools)
             segments.append(ContextSegment(
                 id: "tools-" + ConversationFingerprint.digest(catalog),
                 kind: .requiredTool,

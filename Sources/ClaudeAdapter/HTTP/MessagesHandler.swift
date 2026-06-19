@@ -72,7 +72,12 @@ func handleMessages(
 
     if useStructured {
         do {
-            let result = try await afm.generateStructured(instructions: instructions, conversation: conversation, options: options)
+            let result = try await afm.generateStructured(
+                instructions: instructions,
+                conversation: conversation,
+                tools: normalized.tools ?? [],
+                options: options
+            )
             if result.hasToolCall, let name = result.toolName {
                 let (parsed, validationError) = ToolMapper.validateGeneratedToolCall(
                     name: name,
@@ -110,7 +115,14 @@ func handleMessages(
     }
 
     do {
-        let result = try await afm.generate(instructions: instructions, conversation: conversation, options: options)
+        let result = try await afm.generate(
+            instructions: instructions,
+            conversation: conversation,
+            options: options,
+            conversationKey: prepared.sessionKey,
+            sessionFingerprint: prepared.sessionFingerprint,
+            incrementalPrompt: prepared.incrementalPrompt
+        )
         return jsonResponse(OutputMapper.toTextMessage(
             model: normalized.model, text: result.text,
             inputTokens: result.inputTokens, outputTokens: result.outputTokens, stopReason: result.stopReason
@@ -176,31 +188,16 @@ private func streamStructured(
     afm: AFMRuntime, model: String, tools: [ToolDefinition], instructions: String, conversation: String, options: GenerationOptions,
     writer: inout any ResponseBodyWriter, allocator: ByteBufferAllocator
 ) async throws {
-    let session = afm.newSession(instructions: instructions)
-    var lastText = ""
-    var toolName: String?
-    var toolArgs = ""
-
     do {
-        let stream = session.streamResponse(to: conversation, generating: AgentResponse.self, options: options)
-
-        for try await snapshot in stream {
-            let partial = snapshot.content
-
-            if let textPart = partial.text, !textPart.isEmpty {
-                lastText = textPart
-            }
-
-            if let tc = partial.toolCall {
-                let name = tc.name ?? ""
-                let args = tc.arguments ?? ""
-
-                if !name.isEmpty {
-                    toolName = name
-                }
-                toolArgs = args
-            }
-        }
+        let result = try await afm.generateStructured(
+            instructions: instructions,
+            conversation: conversation,
+            tools: tools,
+            options: options
+        )
+        let lastText = result.text ?? ""
+        let toolName = result.toolName
+        let toolArgs = result.toolArguments
 
         var blockIndex = 0
         if !lastText.isEmpty {
@@ -233,9 +230,7 @@ private func streamStructured(
             try await writer.write(SSEWriter.event("content_block_stop", payload: ContentBlockStopEvent(index: 0), allocator: allocator))
         }
 
-        let outputDesc = [lastText, toolName, toolArgs].compactMap { $0 }.joined(separator: " ")
-        let outputTokens = await TokenCounter.countOutput(model: afm.model, text: outputDesc)
-        try await writer.write(SSEWriter.event("message_delta", payload: MessageDeltaEvent(stopReason: stopReason, outputTokens: outputTokens), allocator: allocator))
+        try await writer.write(SSEWriter.event("message_delta", payload: MessageDeltaEvent(stopReason: stopReason, outputTokens: result.outputTokens), allocator: allocator))
         try await writer.write(SSEWriter.event("message_stop", payload: MessageStopEvent(), allocator: allocator))
 
     } catch let error as LanguageModelSession.GenerationError {

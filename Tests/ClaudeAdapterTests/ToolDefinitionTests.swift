@@ -40,6 +40,19 @@ import Foundation
         #expect(prompt.contains("toolCall field"))
     }
 
+    @Test func stagedToolPromptsSeparateCatalogFromSelectedSchema() throws {
+        let data = Data(#"[{"name":"Read","description":"Read a file","input_schema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute path"}},"required":["path"]}}]"#.utf8)
+        let tools = try JSONDecoder().decode([ToolDefinition].self, from: data)
+
+        let catalog = ToolMapper.buildCompactToolCatalog(tools: tools)
+        let selected = ToolMapper.buildSelectedToolPrompt(tools[0])
+
+        #expect(catalog.contains("Read a file"))
+        #expect(!catalog.contains("path: string"))
+        #expect(selected.contains("path: string (required)"))
+        #expect(selected.contains("Absolute path"))
+    }
+
     @Test func parseValidArguments() {
         let (parsed, err) = ToolMapper.parseArguments("{\"command\":\"ls -la\"}")
         #expect(err.isEmpty)
@@ -95,4 +108,3 @@ import Foundation
         #expect(error.contains("invalid arguments"))
     }
 }
-

@@ -94,3 +94,41 @@ final class ContextLedgerTests: XCTestCase {
         try? FileManager.default.removeItem(at: directory)
     }
 }
+
+final class ContextCompactionTests: XCTestCase {
+    func testDeterministicCapsulePreservesStructuredFacts() async throws {
+        let segments = [
+            ContextSegment(
+                kind: .olderConversation,
+                text: "Decision: use SQLite. The build failed in Sources/App.swift. TODO: rerun tests.",
+                sourceTurnID: "turn-1"
+            )
+        ]
+        let capsule = try await DeterministicContextSummarizer().summarize(segments)
+
+        XCTAssertTrue(capsule.decisions.contains { $0.contains("SQLite") })
+        XCTAssertTrue(capsule.failedAttempts.contains { $0.contains("failed") })
+        XCTAssertTrue(capsule.filesAndSymbols.contains { $0.contains("Sources/App.swift") })
+        XCTAssertEqual(capsule.sourceTurnIDs, ["turn-1"])
+    }
+
+    func testCompactionPersistsCapsuleAndAddsSummary() async throws {
+        let ledger = InMemoryContextLedger()
+        let record = ConversationRecord(id: "conversation", protocolName: "test", fingerprint: "f", turnHashes: [])
+        await ledger.saveConversation(record)
+        let old = ContextSegment(id: "old", kind: .olderConversation, text: String(repeating: "old error Sources/A.swift ", count: 100))
+        let current = ContextSegment(id: "current", kind: .currentRequest, text: "continue")
+        let plan = ContextPlanner.plan(segments: [old, current], budget: 10)
+
+        let compacted = try await ContextCompaction.addCapsuleIfNeeded(
+            to: [old, current],
+            initialPlan: plan,
+            conversationID: record.id,
+            ledger: ledger
+        )
+
+        XCTAssertTrue(compacted.contains { $0.kind == .summary })
+        let restored = await ledger.capsule(for: record.id)
+        XCTAssertNotNil(restored)
+    }
+}

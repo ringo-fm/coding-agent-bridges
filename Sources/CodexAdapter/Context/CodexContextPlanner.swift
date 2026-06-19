@@ -4,6 +4,9 @@ import Foundation
 struct PreparedCodexContext: Sendable {
     let conversation: ConversationRecord
     let plan: ContextPlan
+    let sessionKey: String
+    let sessionFingerprint: String
+    let incrementalPrompt: String
 }
 
 enum CodexContextPlanner {
@@ -17,8 +20,10 @@ enum CodexContextPlanner {
         let current = makeSegments(request: request, normalized: normalized)
         var candidates: [ContextSegment] = []
         var previousHashes: [String] = []
+        var previousRecord: ConversationRecord?
         if let previousID = request.previous_response_id,
            let previous = try await ledger.conversation(id: previousID) {
+            previousRecord = previous
             previousHashes = previous.turnHashes
             let prior = try await ledger.segments(for: previous.id, limit: 64)
             candidates.append(contentsOf: prior.map {
@@ -48,12 +53,15 @@ enum CodexContextPlanner {
 
         let currentHashes = current.filter { $0.sourceTurnID != nil }.map { ConversationFingerprint.digest($0.text) }
         let toolCatalog = request.tools?.map { ($0.name ?? $0.type) + ":" + ($0.description ?? "") }.joined(separator: "\n") ?? ""
-        let fingerprint = ConversationFingerprint.conversationKey(
+        let sessionFingerprint = ConversationFingerprint.conversationKey(
             protocolName: "codex",
             instructions: normalized.instructions ?? "",
             toolCatalog: toolCatalog,
-            turnHashes: previousHashes + currentHashes
+            turnHashes: []
         )
+        let sessionKey = previousRecord?.fingerprint
+            .split(separator: "|", maxSplits: 1).last.map(String.init) ?? responseID
+        let fingerprint = sessionFingerprint + "|" + sessionKey
         let conversation = ConversationRecord(
             id: responseID,
             protocolName: "codex",
@@ -74,8 +82,22 @@ enum CodexContextPlanner {
         }
 
         let reserve = min(max(request.max_output_tokens ?? PromptBuilder.defaultOutputReserve, 128), max(128, contextSize / 2))
-        let plan = ContextPlanner.plan(segments: candidates, budget: max(256, contextSize - reserve))
-        return PreparedCodexContext(conversation: conversation, plan: plan)
+        let budget = max(256, contextSize - reserve)
+        let initialPlan = ContextPlanner.plan(segments: candidates, budget: budget)
+        candidates = try await ContextCompaction.addCapsuleIfNeeded(
+            to: candidates,
+            initialPlan: initialPlan,
+            conversationID: conversation.id,
+            ledger: ledger
+        )
+        let plan = ContextPlanner.plan(segments: candidates, budget: budget)
+        return PreparedCodexContext(
+            conversation: conversation,
+            plan: plan,
+            sessionKey: sessionKey,
+            sessionFingerprint: sessionFingerprint,
+            incrementalPrompt: current.map(\.text).joined(separator: "\n\n")
+        )
     }
 
     private static func makeSegments(
