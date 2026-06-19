@@ -96,7 +96,9 @@ enum CodexContextPlanner {
             plan: plan,
             sessionKey: sessionKey,
             sessionFingerprint: sessionFingerprint,
-            incrementalPrompt: current.map(\.text).joined(separator: "\n\n")
+            incrementalPrompt: current
+                .filter { $0.kind != .instruction && $0.kind != .requiredTool }
+                .map(\.text).joined(separator: "\n\n")
         )
     }
 

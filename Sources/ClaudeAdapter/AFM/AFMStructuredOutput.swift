@@ -15,11 +15,11 @@ struct ToolCallIntent {
     var arguments: String
 }
 
-@Generable(description: "Choose whether to answer with text or call exactly one advertised tool. Never invent a tool name.")
+@Generable(description: "Route the request. If the user asks to read, write, edit, search, run, or otherwise use an advertised tool, toolName is required and text must be nil. Otherwise return final text. Never claim a tool ran and never invent a tool name.")
 struct ToolRoutingDecision {
-    @Guide(description: "Final text response when no tool is required.")
+    @Guide(description: "Final text only when no advertised tool is needed or requested. Never claim tool execution.")
     var text: String?
-    @Guide(description: "Exact advertised tool name when a tool is required.")
+    @Guide(description: "Exact advertised tool name. Required when the user requests an action matching a tool.")
     var toolName: String?
 }
 

@@ -79,19 +79,40 @@ final class AFMRuntime: Sendable {
             options: options
         ).content
 
-        let text = routing.text
-        let toolName = routing.toolName
+        let text = Self.normalizedOptional(routing.text)
+        let toolName = Self.normalizedOptional(routing.toolName)
         var toolArgs = "{}"
         var argumentPrompt = ""
         if let toolName, let selected = tools.first(where: { $0.name == toolName }) {
             let selectedPrompt = ToolMapper.buildSelectedToolPrompt(selected)
             argumentPrompt = conversation + "\n\nGenerate arguments for the selected tool '\(toolName)'."
-            let argumentSession = newSession(instructions: instructions + "\n\n" + selectedPrompt)
-            toolArgs = try await argumentSession.respond(
-                to: argumentPrompt,
-                generating: SelectedToolArguments.self,
-                options: options
-            ).content.arguments
+            var retryFeedback = ""
+            for attempt in 0..<3 {
+                let argumentSession = newSession(instructions: instructions + "\n\n" + selectedPrompt)
+                let candidate = try await argumentSession.respond(
+                    to: argumentPrompt + retryFeedback,
+                    generating: SelectedToolArguments.self,
+                    options: options
+                ).content.arguments
+                let (parsed, validationError) = ToolMapper.validateGeneratedToolCall(
+                        name: toolName,
+                        argumentsJSON: candidate,
+                        against: tools
+                    )
+                if parsed != nil {
+                    toolArgs = candidate
+                    break
+                } else {
+                    guard attempt < 2 else {
+                        throw NSError(
+                            domain: "ClaudeAdapter.ToolArguments",
+                            code: 1,
+                            userInfo: [NSLocalizedDescriptionKey: validationError]
+                        )
+                    }
+                    retryFeedback = "\n\nThe previous arguments were invalid: \(validationError) Return only a valid JSON object matching the schema."
+                }
+            }
         }
 
         let inputTokens = await TokenCounter.countInput(
@@ -111,6 +132,15 @@ final class AFMRuntime: Sendable {
             outputTokens: outputTokens,
             stopReason: stopReason
         )
+    }
+
+    private static func normalizedOptional(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.lowercased() != "nil", trimmed.lowercased() != "null" else {
+            return nil
+        }
+        return trimmed
     }
 }
 

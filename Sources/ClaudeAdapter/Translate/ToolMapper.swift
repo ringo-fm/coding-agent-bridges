@@ -11,7 +11,9 @@ enum ToolMapper {
         "Available tools:\n" + tools.map(\.compactSummary).joined(separator: "\n") + """
 
 
-        Choose one exact tool name only when execution is required. Otherwise respond with final text.
+        If the user requests an action covered by any listed tool, select that exact tool name; this is mandatory.
+        In that case set text to nil. Never claim the action completed because the bridge does not execute tools.
+        Otherwise respond with final text.
         Do not generate arguments during tool selection.
         """
     }
