@@ -12,6 +12,7 @@ let package = Package(
         .library(name: "BridgeHTTP", targets: ["BridgeHTTP"]),
         .library(name: "CodexAdapter", targets: ["CodexAdapter"]),
         .library(name: "ClaudeAdapter", targets: ["ClaudeAdapter"]),
+        .executable(name: "ringo", targets: ["RingoCLI"]),
         .executable(name: "codex-afm-bridge", targets: ["CodexAFMBridge"]),
         .executable(name: "claude-afm-bridge", targets: ["ClaudeAFMBridge"]),
     ],
@@ -67,6 +68,9 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "NIOCore", package: "swift-nio"),
             ]
+        ),
+        .executableTarget(
+            name: "RingoCLI"
         ),
         .executableTarget(
             name: "CodexAFMBridge",
