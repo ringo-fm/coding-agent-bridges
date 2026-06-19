@@ -43,7 +43,24 @@ The current implementations are being migrated from:
 - `ringo-fm/codex-bridge`
 - `ringo-fm/claude-bridge`
 
-The latest source snapshots will be imported without combining Git histories unless a simple history-preserving migration path becomes available. The original repositories will remain available until feature parity and end-to-end validation are complete, then be archived with a pointer to this repository.
+The latest source snapshots are imported without combining Git histories. The original repositories remain available until feature parity and end-to-end validation are complete, then will be archived with a pointer to this repository.
+
+## Context memory
+
+The bridges use a shared token-budget planner and local context ledger. Process-local
+memory is enabled by default; persistent transcript and retrieval storage must be
+enabled explicitly:
+
+```bash
+export AFM_BRIDGE_CONTEXT_MODE=persistent
+# Optional overrides:
+export AFM_BRIDGE_CONTEXT_PATH="$HOME/Library/Application Support/coding-agent-bridges/context.sqlite3"
+export AFM_BRIDGE_CONTEXT_RETENTION_DAYS=30
+```
+
+Set `AFM_BRIDGE_CONTEXT_MODE=off` for stateless compatibility behavior. Persistent
+mode uses SQLite WAL and FTS5; the bridge fails startup if the requested database
+cannot be opened or migrated.
 
 ## Requirements
 
@@ -53,4 +70,6 @@ The latest source snapshots will be imported without combining Git histories unl
 
 ## Status
 
-Repository initialization and migration planning are in progress.
+The standalone Codex and Claude implementations and their 117 unit/contract tests
+have been migrated. Shared runtime, context planning, and persistent retrieval are
+being integrated before live agent validation and repository cutover.

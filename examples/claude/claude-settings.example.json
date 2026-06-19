@@ -1,0 +1,19 @@
+{
+  "env": {
+    "ANTHROPIC_AUTH_TOKEN": "local-afm-token",
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:8766",
+    "API_TIMEOUT_MS": "3000000",
+
+    "ANTHROPIC_MODEL": "claude-afm-local",
+    "ANTHROPIC_CUSTOM_MODEL_OPTION": "claude-afm-local",
+    "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME": "Apple Foundation Local",
+    "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION": "Apple Foundation Models via local Anthropic-compatible gateway",
+
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-afm-local",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-afm-local",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-afm-local",
+
+    "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1"
+  }
+}
+

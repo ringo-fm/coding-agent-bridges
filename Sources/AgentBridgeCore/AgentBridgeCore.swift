@@ -88,3 +88,16 @@ public struct AgentGenerationResult: Sendable, Equatable {
         self.outputTokens = outputTokens
     }
 }
+
+public enum AgentStreamEvent: Sendable, Equatable {
+    case textDelta(String)
+    case toolCall(AgentToolCall)
+    case completed(AgentGenerationResult)
+}
+
+public enum AgentBackendError: Error, Sendable, Equatable {
+    case unavailable(String)
+    case contextTooLarge(limit: Int)
+    case cancelled
+    case generationFailed(String)
+}
