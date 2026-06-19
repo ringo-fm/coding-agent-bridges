@@ -120,17 +120,21 @@ struct RingoCLI {
 
     static func waitForBridge(_ baseURL: String) -> Bool {
         let deadline = Date().addingTimeInterval(20)
+        let curl = findOnPATH("curl") ?? "/usr/bin/curl"
         while Date() < deadline {
             for path in ["/health", "/v1/models", "/"] {
-                guard let url = URL(string: baseURL + path) else { continue }
-                let sem = DispatchSemaphore(value: 0)
-                var ok = false
-                URLSession.shared.dataTask(with: url) { _, response, error in
-                    ok = error == nil && response != nil
-                    sem.signal()
-                }.resume()
-                _ = sem.wait(timeout: .now() + 1)
-                if ok { return true }
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: curl)
+                process.arguments = ["--silent", "--show-error", "--fail", "--max-time", "1", baseURL + path]
+                process.standardOutput = Pipe()
+                process.standardError = Pipe()
+                do {
+                    try process.run()
+                    process.waitUntilExit()
+                    if process.terminationStatus == 0 { return true }
+                } catch {
+                    return false
+                }
             }
             Thread.sleep(forTimeInterval: 0.25)
         }
