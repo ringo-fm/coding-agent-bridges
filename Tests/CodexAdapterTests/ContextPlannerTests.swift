@@ -69,6 +69,30 @@ struct CodexContextContinuityTests {
         #expect(!c.plan.prompt.contains("B sibling"))
     }
 
+    @Test func retrySharesExpectedHeadButIndependentReconstructionUsesAnotherSessionIdentity() async throws {
+        let firstLedger = InMemoryContextLedger()
+        _ = try await prepare("same root", id: "root_one", previous: nil, ledger: firstLedger)
+        let firstAttempt = try await prepare("same request", id: "attempt_one", previous: "root_one", ledger: firstLedger)
+        let retry = try await prepare("same request", id: "attempt_two", previous: "root_one", ledger: firstLedger)
+
+        #expect(firstAttempt.sessionKey == retry.sessionKey)
+        #expect(firstAttempt.sessionFingerprint == retry.sessionFingerprint)
+        #expect(firstAttempt.resultingSessionFingerprint != retry.resultingSessionFingerprint)
+
+        let reconstructedLedger = InMemoryContextLedger()
+        _ = try await prepare("same root", id: "root_two", previous: nil, ledger: reconstructedLedger)
+        let reconstructed = try await prepare(
+            "same request",
+            id: "attempt_three",
+            previous: "root_two",
+            ledger: reconstructedLedger
+        )
+
+        #expect(firstAttempt.conversation.fingerprint == reconstructed.conversation.fingerprint)
+        #expect(firstAttempt.sessionKey != reconstructed.sessionKey)
+        #expect(firstAttempt.sessionFingerprint != reconstructed.sessionFingerprint)
+    }
+
     private func prepare(
         _ text: String,
         id: String,
