@@ -25,15 +25,22 @@ final public class BridgedTool: Tool, @unchecked Sendable {
     public let name: String
     public let description: String
     public let parameters: GenerationSchema
+    public let schemaDescription: String
     public let includesSchemaInInstructions: Bool = true
 
     /// Captured calls from the current generation. Accessed atomically.
     private let capturedCalls = Mutex<[CapturedToolCall]>([])
 
-    public init(name: String, description: String, parameters: GenerationSchema) {
+    public init(
+        name: String,
+        description: String,
+        parameters: GenerationSchema,
+        schemaDescription: String = "{}"
+    ) {
         self.name = name
         self.description = description
         self.parameters = parameters
+        self.schemaDescription = schemaDescription
     }
 
     public func call(arguments: GeneratedContent) async throws -> String {
@@ -52,6 +59,12 @@ final public class BridgedTool: Tool, @unchecked Sendable {
             return result
         }
     }
+
+    public func capture(argumentsJSON: String) {
+        capturedCalls.withLock {
+            $0.append(CapturedToolCall(name: name, argumentsJSON: argumentsJSON))
+        }
+    }
 }
 
 /// Registry of all bridged tools for a single request. Owns the `BridgedTool`
@@ -67,9 +80,39 @@ public final class BridgedToolRegistry: @unchecked Sendable {
         tools.map { $0 as any Tool }
     }
 
+    /// Compact names and descriptions used for the first-stage routing pass.
+    public var compactCatalog: String {
+        "Available tools:\n" + tools.map {
+            let description = String($0.description.prefix(160))
+            return "- \($0.name): \(description)"
+        }.joined(separator: "\n")
+    }
+
+    /// Return a registry containing only the selected tool. The tool instance is
+    /// shared so captured calls remain visible through the original registry.
+    public func selecting(name: String) -> BridgedToolRegistry? {
+        guard let tool = tools.first(where: { $0.name == name }) else { return nil }
+        return BridgedToolRegistry(tools: [tool])
+    }
+
+    public var names: [String] { tools.map(\.name) }
+
+    public var selectedToolInstructions: String? {
+        guard let tool = tools.first, tools.count == 1 else { return nil }
+        return """
+        Selected tool: \(tool.name)
+        Description: \(tool.description)
+        JSON argument schema: \(tool.schemaDescription)
+        Return only the arguments JSON object through the structured output field.
+        """
+    }
+
+    public func capture(argumentsJSON: String) {
+        tools.first?.capture(argumentsJSON: argumentsJSON)
+    }
+
     /// Drain captured calls from all tools, preserving order by tool index.
     public func drainAllCapturedCalls() -> [CapturedToolCall] {
         tools.flatMap { $0.drainCapturedCalls() }
     }
 }
-

@@ -4,6 +4,8 @@ import Foundation
 struct PreparedCodexContext: Sendable {
     let conversation: ConversationRecord
     let plan: ContextPlan
+    let instructions: String
+    let prompt: String
     let sessionKey: String
     let sessionFingerprint: String
     let resultingSessionFingerprint: String
@@ -88,7 +90,13 @@ enum CodexContextPlanner {
         }
 
         let reserve = min(max(request.max_output_tokens ?? PromptBuilder.defaultOutputReserve, 128), max(128, contextSize / 2))
-        let budget = max(256, contextSize - reserve)
+        // AFM counts the selected native tool schema and structured-output
+        // routing guide inside the same context window. Keep a dedicated
+        // quarter-window reserve when tools are advertised; only one selected
+        // schema is supplied during generation.
+        let toolReserve = (request.tools?.isEmpty == false) ? min(1_024, contextSize / 4) : 0
+        let estimatorSafetyReserve = min(512, contextSize / 8)
+        let budget = max(256, contextSize - reserve - toolReserve - estimatorSafetyReserve)
         let initialPlan = ContextPlanner.plan(segments: candidates, budget: budget)
         candidates = try await ContextCompaction.addCapsuleIfNeeded(
             to: candidates,
@@ -97,9 +105,20 @@ enum CodexContextPlanner {
             ledger: ledger
         )
         let plan = ContextPlanner.plan(segments: candidates, budget: budget)
+        let instructionKinds: Set<ContextSegmentKind> = [.instruction, .requiredTool, .summary]
+        let instructions = plan.segments
+            .filter { instructionKinds.contains($0.kind) }
+            .map(\.text)
+            .joined(separator: "\n\n")
+        let prompt = plan.segments
+            .filter { !instructionKinds.contains($0.kind) }
+            .map(\.text)
+            .joined(separator: "\n\n")
         return PreparedCodexContext(
             conversation: conversation,
             plan: plan,
+            instructions: instructions,
+            prompt: prompt.isEmpty ? "[user] Continue." : prompt,
             sessionKey: sessionKey,
             sessionFingerprint: sessionFingerprint,
             resultingSessionFingerprint: resultingSessionFingerprint,

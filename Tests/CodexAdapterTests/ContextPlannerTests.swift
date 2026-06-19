@@ -40,6 +40,30 @@ struct CodexContextContinuityTests {
         #expect(second.plan.prompt.contains("first request"))
     }
 
+    @Test func separatesInstructionsFromConversationWithoutDuplicatingThem() async throws {
+        let ledger = InMemoryContextLedger()
+        let request = ResponsesCreateRequest(
+            model: "apple-foundation-local",
+            instructions: "Follow the repository instructions.",
+            input: .text("Summarize this repository."),
+            tools: [ResponsesTool(type: "function", name: "read_file", description: "Read a file")]
+        )
+        let prepared = try await CodexContextPlanner.prepare(
+            request: request,
+            normalized: InputNormalizer.normalize(request, flags: .codexTools),
+            responseID: "resp_split",
+            contextSize: 4096,
+            ledger: ledger
+        )
+
+        #expect(prepared.instructions.contains("Follow the repository instructions."))
+        #expect(prepared.instructions.contains("Tool read_file"))
+        #expect(!prepared.prompt.contains("Follow the repository instructions."))
+        #expect(!prepared.prompt.contains("Tool read_file"))
+        #expect(prepared.prompt.contains("Summarize this repository."))
+        #expect(prepared.plan.budget == 2_048)
+    }
+
     @Test func restartRestoresThreeTurnChain() async throws {
         let path = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString).appendingPathComponent("context.sqlite3").path

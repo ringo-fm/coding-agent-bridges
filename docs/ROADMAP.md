@@ -11,6 +11,11 @@ This roadmap consolidates the open issues across the three bridge repositories. 
 
 - [`coding-agent-bridges#1`](https://github.com/ringo-fm/coding-agent-bridges/issues/1) — initialize the monorepo and migrate both bridges
 - [`coding-agent-bridges#2`](https://github.com/ringo-fm/coding-agent-bridges/issues/2) — make the local Git-history decision and run macOS 26 validation
+- [`coding-agent-bridges#4`](https://github.com/ringo-fm/coding-agent-bridges/issues/4) — add the `ringo` launcher
+- [`coding-agent-bridges#6`](https://github.com/ringo-fm/coding-agent-bridges/issues/6) — unified multi-protocol gateway
+- [`coding-agent-bridges#7`](https://github.com/ringo-fm/coding-agent-bridges/issues/7) — live operational dashboard
+- [`coding-agent-bridges#8`](https://github.com/ringo-fm/coding-agent-bridges/issues/8) — session and context management
+- [`coding-agent-bridges#9`](https://github.com/ringo-fm/coding-agent-bridges/issues/9) — cache controls and diagnostics
 - [`codex-bridge#1`](https://github.com/ringo-fm/codex-bridge/issues/1) — add stateful context compaction for Codex
 - [`codex-bridge#2`](https://github.com/ringo-fm/codex-bridge/issues/2) — migrate Codex and retire the standalone repository
 - [`claude-bridge#1`](https://github.com/ringo-fm/claude-bridge/issues/1) — add local context memory and staged ingestion for Claude
@@ -101,6 +106,16 @@ This roadmap consolidates the open issues across the three bridge repositories. 
 - [ ] Archive `ringo-fm/codex-bridge` and `ringo-fm/claude-bridge` through GitHub settings.
 
 Do not archive either standalone repository before feature parity and end-to-end validation are confirmed.
+
+## Product surfaces
+
+- [x] Add `ringo claude`, `ringo codex`, `ringo run`, `ringo serve`, and `ringo doctor`.
+- [x] Serve OpenAI and Anthropic protocol surfaces from one gateway process.
+- [x] Share AFM backend, context ledger, auth policy, telemetry, and lifecycle.
+- [x] Add a redacted live dashboard and structured runtime state endpoint.
+- [x] Add session list, inspect, resume-bundle, export, delete, and prune APIs/CLI.
+- [x] Add cache stats, search, inspect, prune, and clear APIs/CLI.
+- [x] Require authorization for mutations and content-bearing responses.
 
 ## Non-goals
 

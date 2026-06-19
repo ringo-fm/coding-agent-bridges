@@ -41,7 +41,20 @@ public enum ToolMapper {
             schema = buildEmptySchema(name: name, description: description)
         }
 
-        return BridgedTool(name: name, description: description, parameters: schema)
+        let schemaDescription: String
+        if let params = tool.parameters,
+           let data = try? JSONEncoder().encode(params),
+           let text = String(data: data, encoding: .utf8) {
+            schemaDescription = text
+        } else {
+            schemaDescription = #"{"type":"object","properties":{}}"#
+        }
+        return BridgedTool(
+            name: name,
+            description: description,
+            parameters: schema,
+            schemaDescription: schemaDescription
+        )
     }
 
     // MARK: - Schema construction
@@ -121,4 +134,3 @@ public enum ToolMapper {
         return try! GenerationSchema(root: dynamic, dependencies: [])
     }
 }
-
