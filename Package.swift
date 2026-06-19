@@ -89,9 +89,14 @@ let package = Package(
         .target(
             name: "RingoCore",
             dependencies: [
+                "AgentBridgeCore",
                 "AFMBackend",
+                "BridgeHTTP",
                 "ClaudeAdapter",
                 "CodexAdapter",
+                .product(name: "Hummingbird", package: "hummingbird"),
+                .product(name: "HTTPTypes", package: "swift-http-types"),
+                .product(name: "Logging", package: "swift-log"),
             ]
         ),
         .executableTarget(
@@ -126,7 +131,11 @@ let package = Package(
         ),
         .testTarget(
             name: "RingoCoreTests",
-            dependencies: ["RingoCore"]
+            dependencies: [
+                "RingoCore",
+                .product(name: "HummingbirdTesting", package: "hummingbird"),
+                .product(name: "HTTPTypes", package: "swift-http-types"),
+            ]
         ),
     ]
 )

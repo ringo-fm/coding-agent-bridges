@@ -8,7 +8,7 @@ struct Ringo: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "ringo",
         abstract: "Run coding agents against Apple Foundation Models.",
-        subcommands: [Claude.self, Codex.self, Run.self, Serve.self, Doctor.self]
+        subcommands: [Claude.self, Codex.self, Run.self, Serve.self, Doctor.self, Sessions.self, Cache.self]
     )
 
     struct Claude: AsyncParsableCommand {
@@ -31,23 +31,82 @@ struct Ringo: AsyncParsableCommand {
     }
 
     struct Serve: AsyncParsableCommand {
-        static let configuration = CommandConfiguration(abstract: "Run a bridge for an external integration.")
-        @Argument var agent: String
+        static let configuration = CommandConfiguration(abstract: "Run the unified OpenAI and Anthropic gateway.")
         @Option var host = "127.0.0.1"
-        @Option var port: Int?
+        @Option var port = 8765
 
         func run() async throws {
-            let selected = try RingoRuntime.agent(named: agent)
-            let selectedPort = port ?? selected.defaultPort
-            let server = Task { try await RingoRuntime.runBridge(agent: selected, host: host, port: selectedPort) }
+            let server = Task { try await RingoRuntime.runGateway(host: host, port: port) }
             do {
-                try await RingoRuntime.waitUntilHealthy(host: host, port: selectedPort)
-                print(RingoRuntime.serveInstructions(agent: selected, host: host, port: selectedPort))
+                try await RingoRuntime.waitUntilHealthy(host: host, port: port)
+                print(RingoRuntime.gatewayServeInstructions(host: host, port: port))
                 try await server.value
             } catch {
                 server.cancel()
                 throw error
             }
+        }
+    }
+
+    struct Sessions: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Inspect and manage gateway sessions.",
+            subcommands: [List.self, Show.self, Resume.self, Export.self, Delete.self, Prune.self]
+        )
+        struct List: AsyncParsableCommand {
+            @Option var url = "http://127.0.0.1:8765"
+            @Option var limit = 100
+            func run() async throws { print(try await client(url).request(path: "/sessions?limit=\(limit)")) }
+        }
+        struct Show: AsyncParsableCommand {
+            @Argument var id: String; @Option var url = "http://127.0.0.1:8765"
+            func run() async throws { print(try await client(url).request(path: "/sessions/\(escaped(id))")) }
+        }
+        struct Resume: AsyncParsableCommand {
+            @Argument var id: String; @Option var url = "http://127.0.0.1:8765"
+            func run() async throws { print(try await client(url).request(path: "/sessions/\(escaped(id))/resume", method: "POST")) }
+        }
+        struct Export: AsyncParsableCommand {
+            @Argument var id: String; @Flag var includeContent = false; @Option var url = "http://127.0.0.1:8765"
+            func run() async throws { print(try await client(url).request(path: "/sessions/\(escaped(id))/export?include_content=\(includeContent)")) }
+        }
+        struct Delete: AsyncParsableCommand {
+            @Argument var id: String; @Option var url = "http://127.0.0.1:8765"
+            func run() async throws { print(try await client(url).request(path: "/sessions/\(escaped(id))", method: "DELETE")) }
+        }
+        struct Prune: AsyncParsableCommand {
+            @Option var url = "http://127.0.0.1:8765"
+            func run() async throws { print(try await client(url).request(path: "/sessions/prune", method: "POST")) }
+        }
+    }
+
+    struct Cache: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Inspect and manage the context artifact cache.",
+            subcommands: [Stats.self, Search.self, Show.self, Prune.self, Clear.self]
+        )
+        struct Stats: AsyncParsableCommand {
+            @Option var url = "http://127.0.0.1:8765"
+            func run() async throws { print(try await client(url).request(path: "/cache/stats")) }
+        }
+        struct Search: AsyncParsableCommand {
+            @Argument var query: String; @Flag var includeContent = false; @Option var url = "http://127.0.0.1:8765"
+            func run() async throws {
+                let q = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
+                print(try await client(url).request(path: "/cache/search?q=\(q)&include_content=\(includeContent)"))
+            }
+        }
+        struct Show: AsyncParsableCommand {
+            @Argument var hash: String; @Flag var includeContent = false; @Option var url = "http://127.0.0.1:8765"
+            func run() async throws { print(try await client(url).request(path: "/cache/artifacts/\(escaped(hash))?include_content=\(includeContent)")) }
+        }
+        struct Prune: AsyncParsableCommand {
+            @Option var days = 30; @Option var url = "http://127.0.0.1:8765"
+            func run() async throws { print(try await client(url).request(path: "/cache/prune?days=\(days)", method: "POST")) }
+        }
+        struct Clear: AsyncParsableCommand {
+            @Option var url = "http://127.0.0.1:8765"
+            func run() async throws { print(try await client(url).request(path: "/cache/artifacts", method: "DELETE")) }
         }
     }
 
@@ -68,7 +127,7 @@ private func launch(_ agent: RingoAgent, arguments: [String]) async throws {
     let invocation = try RingoRuntime.invocation(
         for: agent, host: "127.0.0.1", port: port, arguments: arguments
     )
-    let server = Task { try await RingoRuntime.runBridge(agent: agent, host: "127.0.0.1", port: port) }
+    let server = Task { try await RingoRuntime.runGateway(host: "127.0.0.1", port: port) }
     do {
         try await RingoRuntime.waitUntilHealthy(host: "127.0.0.1", port: port)
         let status = try await RingoRuntime.runChild(invocation)
@@ -79,3 +138,10 @@ private func launch(_ agent: RingoAgent, arguments: [String]) async throws {
         throw error
     }
 }
+
+private func client(_ url: String) throws -> RingoAdminClient {
+    guard let value = URL(string: url) else { throw ValidationError("Invalid gateway URL") }
+    return RingoAdminClient(baseURL: value)
+}
+
+private func escaped(_ value: String) -> String { RingoAdminClient.escapedPathComponent(value) }

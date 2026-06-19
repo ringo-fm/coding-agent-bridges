@@ -33,19 +33,28 @@ Launcher commands select an available localhost port automatically, inherit the
 terminal's standard input and output, forward interrupts, and return the child
 agent's exit status.
 
-## Standalone bridge mode
+## Unified gateway
 
 Use `serve` for editors, debugging, or integrations that are not launched as a
-child process. Claude defaults to port 8766 and Codex to port 8765; both accept
-`--host` and `--port` overrides.
+child process. One process mounts both protocol surfaces, the dashboard, and
+the context management API on port 8765 by default.
 
 ```bash
-swift run ringo serve claude
-swift run ringo serve codex --port 9000
+swift run ringo serve
+swift run ringo serve --port 9000
 ```
 
-Once healthy, `serve` prints the shell environment and command configuration
-needed by the selected agent. The lower-level executables remain available:
+The important endpoints are:
+
+```text
+OpenAI Responses:  http://127.0.0.1:8765/openai/v1/responses
+Anthropic Messages: http://127.0.0.1:8765/anthropic/v1/messages
+Dashboard:          http://127.0.0.1:8765/dashboard
+Health:             http://127.0.0.1:8765/health
+```
+
+Once healthy, `serve` prints the environment and Codex provider configuration.
+The lower-level standalone executables remain available:
 
 ```bash
 AFM_BRIDGE_API_KEY=dev swift run codex-afm-bridge
@@ -61,7 +70,7 @@ CodexAFMBridge  -> CodexAdapter  --+
                                   +-> AgentBridgeCore
 ClaudeAFMBridge -> ClaudeAdapter -+-> AFMBackend
                                   +-> BridgeHTTP
-RingoCLI         -> RingoCore ----+-> CodexAdapter / ClaudeAdapter
+RingoCLI         -> RingoCore ----+-> unified gateway / CodexAdapter / ClaudeAdapter
 ```
 
 Planned Swift Package targets:
@@ -110,6 +119,35 @@ Set `AFM_BRIDGE_CONTEXT_MODE=off` for stateless compatibility behavior. Persiste
 mode uses SQLite WAL and FTS5; the bridge fails startup if the requested database
 cannot be opened or migrated.
 
+## Dashboard and management
+
+The dashboard displays runtime health, mounted protocols, request telemetry,
+recent failure IDs, session summaries, and cache statistics. It never displays
+prompts, completions, tool arguments, or authentication tokens.
+
+The same data is available through `ringo`:
+
+```bash
+swift run ringo sessions list
+swift run ringo sessions show <conversation-id>
+swift run ringo sessions export <conversation-id>
+swift run ringo sessions export <conversation-id> --include-content
+swift run ringo sessions resume <conversation-id>
+swift run ringo sessions delete <conversation-id>
+swift run ringo sessions prune
+
+swift run ringo cache stats
+swift run ringo cache search "compiler error"
+swift run ringo cache show <artifact-hash>
+swift run ringo cache prune --days 30
+swift run ringo cache clear
+```
+
+Redacted reads are available without credentials when the gateway is bound to
+loopback. Mutations and `--include-content` require the configured bearer token;
+all management access requires authentication when the server binds to a
+non-loopback host.
+
 ## Requirements
 
 - macOS 26+
@@ -121,4 +159,5 @@ cannot be opened or migrated.
 The standalone Codex and Claude implementations and their unit/contract tests have
 been migrated. Shared runtime, context planning, structured compaction, persistent
 retrieval, session reuse, and staged Claude/Codex tool-schema ingestion are implemented.
-Live agent validation and repository cutover remain in progress.
+The unified gateway, dashboard, session management, and artifact cache controls
+are also implemented. Live agent validation and repository cutover remain in progress.

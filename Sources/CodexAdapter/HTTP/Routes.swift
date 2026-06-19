@@ -1,5 +1,6 @@
 import Foundation
 import AgentBridgeCore
+import AFMBackend
 import Hummingbird
 import HummingbirdCore
 import NIOCore
@@ -37,25 +38,37 @@ public enum Routes {
     public static func build(services: BridgeServices) -> Router<BasicRequestContext> {
         let router = Router<BasicRequestContext>()
         router.add(middleware: AuthMiddleware<BasicRequestContext>(expectedToken: services.config.authToken))
+        mount(on: router.group(), services: services)
+        return router
+    }
 
-        // GET /health
-        router.get("health") { _, _ in
-            let availability = services.afm.availability()
-            let payload: [String: String] = [
-                "status": availability.isAvailable ? "ok" : "unavailable",
-                "model": SupportedModels.canonical,
-                "available": availability.isAvailable ? "true" : "false"
-            ]
-            var headers = HTTPFields()
-            headers[.contentType] = "application/json; charset=utf-8"
-            return Response(status: .ok, headers: headers, body: .init(byteBuffer: try encodeBuffer(payload)))
-        }
+    public static func mount(
+        on group: RouterGroup<BasicRequestContext>,
+        services: BridgeServices,
+        includeSharedRoutes: Bool = true
+    ) {
+        let router = group
 
-        // GET /v1/models
-        router.get("v1/models") { _, _ in
-            var headers = HTTPFields()
-            headers[.contentType] = "application/json; charset=utf-8"
-            return Response(status: .ok, headers: headers, body: .init(byteBuffer: try encodeBuffer(ModelsList.default)))
+        if includeSharedRoutes {
+            // GET /health
+            router.get("health") { _, _ in
+                let availability = services.afm.availability()
+                let payload: [String: String] = [
+                    "status": availability.isAvailable ? "ok" : "unavailable",
+                    "model": SupportedModels.canonical,
+                    "available": availability.isAvailable ? "true" : "false"
+                ]
+                var headers = HTTPFields()
+                headers[.contentType] = "application/json; charset=utf-8"
+                return Response(status: .ok, headers: headers, body: .init(byteBuffer: try encodeBuffer(payload)))
+            }
+
+            // GET /v1/models
+            router.get("v1/models") { _, _ in
+                var headers = HTTPFields()
+                headers[.contentType] = "application/json; charset=utf-8"
+                return Response(status: .ok, headers: headers, body: .init(byteBuffer: try encodeBuffer(ModelsList.default)))
+            }
         }
 
         // POST /v1/responses
@@ -171,8 +184,34 @@ public enum Routes {
             return Response(status: .ok, headers: headers, body: .init(byteBuffer: try encodeBuffer(response)))
         }
 
-        return router
     }
+}
+
+public func mountCodexRoutes(
+    on router: RouterGroup<BasicRequestContext>,
+    host: String,
+    port: Int,
+    authToken: String,
+    sharedBackend: FoundationModelsBackend,
+    contextLedger: any ContextLedger,
+    logger: Logger
+) {
+    let config = BridgeConfig(
+        host: host,
+        port: port,
+        authToken: authToken,
+        logLevel: .warning,
+        debug: false,
+        contextMode: .memory
+    )
+    Routes.mount(on: router, services: BridgeServices(
+        afm: AFMRuntime(sharedBackend: sharedBackend),
+        store: ResponseStore(),
+        config: config,
+        profile: .codexTools,
+        logger: logger,
+        contextLedger: contextLedger
+    ), includeSharedRoutes: false)
 }
 
 // MARK: - Non-streaming response

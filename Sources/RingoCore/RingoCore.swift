@@ -73,11 +73,11 @@ public enum RingoRuntime {
         let path = try executable ?? resolveExecutable(agent.rawValue, environment: inheritedEnvironment)
         let childArguments = arguments.first == "--" ? Array(arguments.dropFirst()) : arguments
         var environment = inheritedEnvironment
-        let baseURL = "http://\(host):\(port)"
+        let gatewayURL = "http://\(host):\(port)"
 
         switch agent {
         case .claude:
-            environment["ANTHROPIC_BASE_URL"] = baseURL
+            environment["ANTHROPIC_BASE_URL"] = gatewayURL + "/anthropic"
             environment["ANTHROPIC_AUTH_TOKEN"] = localToken
             environment["ANTHROPIC_API_KEY"] = localToken
             environment["ANTHROPIC_MODEL"] = agent.model
@@ -89,7 +89,7 @@ public enum RingoRuntime {
             return ChildInvocation(executable: path, arguments: childArguments, environment: environment)
         case .codex:
             environment["AFM_BRIDGE_API_KEY"] = localToken
-            let overrides = codexOverrides(baseURL: baseURL + "/v1", model: agent.model)
+            let overrides = codexOverrides(baseURL: gatewayURL + "/openai/v1", model: agent.model)
             return ChildInvocation(executable: path, arguments: overrides + childArguments, environment: environment)
         }
     }
@@ -171,6 +171,10 @@ public enum RingoRuntime {
         }
     }
 
+    public static func runGateway(host: String, port: Int) async throws {
+        try await RingoGateway.run(config: .fromEnvironment(host: host, port: port))
+    }
+
     public static func waitUntilHealthy(host: String, port: Int, timeout: Duration = .seconds(10)) async throws {
         let url = URL(string: "http://\(host):\(port)/health")!
         let clock = ContinuousClock()
@@ -241,6 +245,24 @@ public enum RingoRuntime {
             \(command)
             """
         }
+    }
+
+    public static func gatewayServeInstructions(host: String, port: Int) -> String {
+        let baseURL = "http://\(host):\(port)"
+        let codex = (["codex"] + codexOverrides(baseURL: baseURL + "/openai/v1", model: RingoAgent.codex.model))
+            .map(shellQuote).joined(separator: " ")
+        return """
+        Ringo gateway is ready at \(baseURL)
+        Dashboard: \(baseURL)/dashboard
+
+        Claude:
+        export ANTHROPIC_BASE_URL='\(baseURL)/anthropic'
+        export ANTHROPIC_AUTH_TOKEN='\(localToken)'
+
+        Codex:
+        export AFM_BRIDGE_API_KEY='\(localToken)'
+        \(codex)
+        """
     }
 
     private static func shellQuote(_ value: String) -> String {
