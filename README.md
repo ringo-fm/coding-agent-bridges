@@ -7,6 +7,51 @@ This repository is the source of truth for the shared AFM runtime and protocol a
 - Codex through an OpenAI Responses API-compatible bridge
 - Claude Code through an Anthropic Messages API-compatible bridge
 
+## Quick start
+
+The `ringo` launcher starts the required local bridge, waits for it to become
+healthy, configures the selected coding agent for the local model, and cleans up
+the bridge when the agent exits:
+
+```bash
+swift run ringo doctor
+swift run ringo claude
+swift run ringo codex
+```
+
+Pass agent arguments after `--`:
+
+```bash
+swift run ringo claude -- --dangerously-skip-permissions
+swift run ringo codex -- exec "summarize this repository"
+
+# Equivalent explicit form:
+swift run ringo run claude -- --print "explain Package.swift"
+```
+
+Launcher commands select an available localhost port automatically, inherit the
+terminal's standard input and output, forward interrupts, and return the child
+agent's exit status.
+
+## Standalone bridge mode
+
+Use `serve` for editors, debugging, or integrations that are not launched as a
+child process. Claude defaults to port 8766 and Codex to port 8765; both accept
+`--host` and `--port` overrides.
+
+```bash
+swift run ringo serve claude
+swift run ringo serve codex --port 9000
+```
+
+Once healthy, `serve` prints the shell environment and command configuration
+needed by the selected agent. The lower-level executables remain available:
+
+```bash
+AFM_BRIDGE_API_KEY=dev swift run codex-afm-bridge
+swift run claude-afm-bridge --auth-token dev
+```
+
 ## Architecture
 
 The implementation is divided into protocol-independent core targets and protocol-specific adapters:
@@ -16,6 +61,7 @@ CodexAFMBridge  -> CodexAdapter  --+
                                   +-> AgentBridgeCore
 ClaudeAFMBridge -> ClaudeAdapter -+-> AFMBackend
                                   +-> BridgeHTTP
+RingoCLI         -> RingoCore ----+-> CodexAdapter / ClaudeAdapter
 ```
 
 Planned Swift Package targets:
@@ -25,6 +71,8 @@ Planned Swift Package targets:
 - `BridgeHTTP`: shared Hummingbird server, authentication, JSON, health, and SSE utilities
 - `CodexAdapter`: OpenAI Responses API and Codex-specific compatibility behavior
 - `ClaudeAdapter`: Anthropic Messages API and Claude Code-specific compatibility behavior
+- `RingoCore`: launcher configuration, process lifecycle, readiness, and diagnostics
+- `RingoCLI`: primary `ringo` command-line interface
 - `CodexAFMBridge`: `codex-afm-bridge` executable
 - `ClaudeAFMBridge`: `claude-afm-bridge` executable
 
@@ -72,5 +120,5 @@ cannot be opened or migrated.
 
 The standalone Codex and Claude implementations and their unit/contract tests have
 been migrated. Shared runtime, context planning, structured compaction, persistent
-retrieval, session reuse, and staged Claude tool-schema ingestion are implemented.
+retrieval, session reuse, and staged Claude/Codex tool-schema ingestion are implemented.
 Live agent validation and repository cutover remain in progress.

@@ -12,6 +12,8 @@ let package = Package(
         .library(name: "BridgeHTTP", targets: ["BridgeHTTP"]),
         .library(name: "CodexAdapter", targets: ["CodexAdapter"]),
         .library(name: "ClaudeAdapter", targets: ["ClaudeAdapter"]),
+        .library(name: "RingoCore", targets: ["RingoCore"]),
+        .executable(name: "ringo", targets: ["RingoCLI"]),
         .executable(name: "codex-afm-bridge", targets: ["CodexAFMBridge"]),
         .executable(name: "claude-afm-bridge", targets: ["ClaudeAFMBridge"]),
     ],
@@ -84,6 +86,21 @@ let package = Package(
                 .product(name: "Hummingbird", package: "hummingbird"),
             ]
         ),
+        .target(
+            name: "RingoCore",
+            dependencies: [
+                "AFMBackend",
+                "ClaudeAdapter",
+                "CodexAdapter",
+            ]
+        ),
+        .executableTarget(
+            name: "RingoCLI",
+            dependencies: [
+                "RingoCore",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ]
+        ),
         .testTarget(
             name: "AgentBridgeCoreTests",
             dependencies: ["AgentBridgeCore"]
@@ -106,6 +123,10 @@ let package = Package(
                 .product(name: "HummingbirdTesting", package: "hummingbird"),
                 .product(name: "HTTPTypes", package: "swift-http-types"),
             ]
+        ),
+        .testTarget(
+            name: "RingoCoreTests",
+            dependencies: ["RingoCore"]
         ),
     ]
 )

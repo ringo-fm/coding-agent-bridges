@@ -174,7 +174,6 @@ public final class AFMRuntime: Sendable {
             }
         }
 
-        let session = makeSession(instructions: request.instructions, tools: request.toolRegistry)
         let options = makeOptions(
             temperature: request.temperature,
             maxOutputTokens: request.maxOutputTokens,
@@ -182,17 +181,40 @@ public final class AFMRuntime: Sendable {
         )
 
         do {
-            try Task.checkCancellation()
-            let response = try await session.respond(to: request.prompt, options: options)
-            try Task.checkCancellation()
-            let text = response.content
-            let outputTokens = await outputTokenCount(for: text)
+            if Self.hasSuccessfulToolOutput(request.incrementalPrompt ?? request.prompt) {
+                let session = makeSession(instructions: request.instructions)
+                let generated = try await session.respond(to: request.prompt, options: options).content
+                let text = Self.nonEmptyText(generated, prompt: request.prompt)
+                return AFMGenerateResult(
+                    text: text,
+                    inputTokens: await inputTokenCount(for: request.prompt),
+                    outputTokens: await outputTokenCount(for: text)
+                )
+            }
+            let routing = try await routeTool(request: request, options: options)
+            guard let selected = routing.selected else {
+                let text = routing.text ?? ""
+                return AFMGenerateResult(
+                    text: text,
+                    inputTokens: await inputTokenCount(for: request.prompt),
+                    outputTokens: await outputTokenCount(for: text)
+                )
+            }
+            let arguments = try await generateToolArguments(
+                request: request,
+                selected: selected,
+                options: options
+            )
+            selected.capture(argumentsJSON: Self.sanitizeToolArguments(
+                arguments,
+                toolName: selected.names[0]
+            ))
             let toolCalls = request.toolRegistry?.drainAllCapturedCalls() ?? []
             return AFMGenerateResult(
-                text: text,
+                text: "",
                 inputTokens: nil,
-                outputTokens: outputTokens,
-                finishReason: toolCalls.isEmpty ? "stop" : "tool_calls",
+                outputTokens: await outputTokenCount(for: arguments),
+                finishReason: "tool_calls",
                 toolCalls: toolCalls
             )
         } catch is CancellationError {
@@ -213,35 +235,40 @@ public final class AFMRuntime: Sendable {
     ) async throws -> AsyncThrowingStream<AFMStreamSnapshot, Error> {
         try AFMAvailabilityProbe.requireAvailable()
 
-        let session = makeSession(instructions: request.instructions, tools: request.toolRegistry)
         let options = makeOptions(
             temperature: request.temperature,
             maxOutputTokens: request.maxOutputTokens,
             topP: request.topP
         )
 
-        let stream = session.streamResponse(to: request.prompt, options: options)
-        let box = StreamBox(stream: stream, session: session)
-        return AsyncThrowingStream { continuation in
-            let task = Task<Void, Never> {
-                do {
-                    for try await snapshot in box.stream {
-                        try Task.checkCancellation()
-                        continuation.yield(AFMStreamSnapshot(cumulativeText: snapshot.content))
-                    }
-                    continuation.finish()
-                } catch is CancellationError {
-                    continuation.finish(throwing: BridgeError.generationCancelled)
-                } catch let error as LanguageModelSession.GenerationError {
-                    continuation.finish(throwing: Self.map(error))
-                } catch {
-                    continuation.finish(throwing: BridgeError.generationFailed(String(describing: error)))
+        if request.toolRegistry == nil {
+            return try await textStream(request: request, options: options)
+        }
+
+        if Self.hasSuccessfulToolOutput(request.incrementalPrompt ?? request.prompt) {
+            return try await textStream(request: request, options: options)
+        }
+
+        let routing = try await routeTool(request: request, options: options)
+        guard let selected = routing.selected else {
+            let text = routing.text ?? ""
+            return AsyncThrowingStream { continuation in
+                if !text.isEmpty {
+                    continuation.yield(AFMStreamSnapshot(cumulativeText: text, isFinal: true))
                 }
-            }
-            continuation.onTermination = { _ in
-                task.cancel()
+                continuation.finish()
             }
         }
+        let arguments = try await generateToolArguments(
+            request: request,
+            selected: selected,
+            options: options
+        )
+        selected.capture(argumentsJSON: Self.sanitizeToolArguments(
+            arguments,
+            toolName: selected.names[0]
+        ))
+        return AsyncThrowingStream { continuation in continuation.finish() }
     }
 
     // MARK: - Internals
@@ -257,6 +284,234 @@ public final class AFMRuntime: Sendable {
             return LanguageModelSession(model: model, tools: afmTools)
         }
         return LanguageModelSession(model: model)
+    }
+
+    private func textStream(
+        request: AFMGenerateRequest,
+        options: GenerationOptions
+    ) async throws -> AsyncThrowingStream<AFMStreamSnapshot, Error> {
+        let session = makeSession(instructions: request.instructions)
+        let text: String
+        do {
+            let generated = try await session.respond(to: request.prompt, options: options).content
+            text = Self.nonEmptyText(generated, prompt: request.prompt)
+        } catch is CancellationError {
+            throw BridgeError.generationCancelled
+        } catch let error as LanguageModelSession.GenerationError {
+            throw Self.map(error)
+        } catch {
+            throw BridgeError.generationFailed(String(describing: error))
+        }
+        return AsyncThrowingStream { continuation in
+            if !text.isEmpty {
+                continuation.yield(AFMStreamSnapshot(cumulativeText: text, isFinal: true))
+            }
+            continuation.finish()
+        }
+    }
+
+    private func routeTool(
+        request: AFMGenerateRequest,
+        options: GenerationOptions
+    ) async throws -> (text: String?, selected: BridgedToolRegistry?) {
+        guard let registry = request.toolRegistry else { return (nil, nil) }
+        let routingInstructions = registry.compactCatalog + """
+
+
+        If the request requires reading files, inspecting the repository, running commands, editing, or another advertised action, select exactly one tool and set text to nil. Otherwise provide the final answer in text. Never claim a tool was executed.
+        """
+        let routingPrompt = Self.boundedRoutingPrompt(request.incrementalPrompt ?? request.prompt)
+        let session = makeSession(instructions: routingInstructions)
+        let decision: CodexToolRoutingDecision
+        do {
+            decision = try await session.respond(
+                to: routingPrompt,
+                generating: CodexToolRoutingDecision.self,
+                options: options
+            ).content
+        } catch is CancellationError {
+            throw BridgeError.generationCancelled
+        } catch let error as LanguageModelSession.GenerationError {
+            throw Self.map(error)
+        } catch {
+            throw BridgeError.generationFailed(String(describing: error))
+        }
+        let toolName = Self.normalizedOptional(decision.toolName)
+        let text = Self.normalizedOptional(decision.text)
+        guard let toolName, let selected = registry.selecting(name: toolName) else {
+            if Self.requiresRepositoryInspection(routingPrompt),
+               let fallback = Self.inspectionTool(in: registry) {
+                return (nil, fallback)
+            }
+            return (text, nil)
+        }
+        return (nil, selected)
+    }
+
+    private func generateToolArguments(
+        request: AFMGenerateRequest,
+        selected: BridgedToolRegistry,
+        options: GenerationOptions
+    ) async throws -> String {
+        guard let selectedInstructions = selected.selectedToolInstructions else {
+            throw BridgeError.generationFailed("selected tool schema is unavailable")
+        }
+        let toolName = selected.names[0]
+        let instructions = selectedInstructions + """
+
+
+        Generate concrete, immediately executable arguments from the current request. For exec_command, cmd must be a complete shell command, not a bare program name. Never request escalated permissions.
+        """
+        let argumentPrompt = Self.boundedRoutingPrompt(request.incrementalPrompt ?? request.prompt)
+        if toolName == "exec_command", Self.mentionsRepository(argumentPrompt),
+           let fallback = Self.repositoryInspectionArguments() {
+            return fallback
+        }
+        var feedback = ""
+        for attempt in 0..<3 {
+            let session = makeSession(instructions: instructions)
+            do {
+                let candidate = try await session.respond(
+                    to: argumentPrompt + feedback,
+                    generating: CodexSelectedToolArguments.self,
+                    options: options
+                ).content.arguments
+                if let validationError = Self.toolArgumentValidationError(
+                    candidate,
+                    toolName: toolName,
+                    priorContext: argumentPrompt
+                ) {
+                    guard attempt < 2 else { break }
+                    feedback = "\n\nThe previous arguments were invalid: \(validationError) Generate corrected arguments for the current request."
+                    continue
+                }
+                return candidate
+            } catch is CancellationError {
+                throw BridgeError.generationCancelled
+            } catch let error as LanguageModelSession.GenerationError {
+                if case .decodingFailure = error, attempt < 2 {
+                    feedback = "\n\nThe previous structured output could not be decoded. Return a valid JSON object string in the arguments field."
+                    continue
+                }
+                if case .decodingFailure = error { break }
+                throw Self.map(error)
+            }
+        }
+        if toolName == "exec_command", Self.mentionsRepository(argumentPrompt) {
+            if let fallback = Self.repositoryInspectionArguments() { return fallback }
+        }
+        throw BridgeError.generationFailed("failed to generate valid tool arguments")
+    }
+
+    private static func toolArgumentValidationError(
+        _ value: String,
+        toolName: String,
+        priorContext: String
+    ) -> String? {
+        guard let data = value.data(using: .utf8),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return "value is not a JSON object"
+        }
+        if toolName == "exec_command" {
+            guard let command = object["cmd"] as? String,
+                  !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return "cmd is required"
+            }
+            let bareCommands: Set<String> = ["git", "rg", "grep", "find", "cat", "sed", "ls"]
+            if bareCommands.contains(command.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                return "cmd must include complete arguments and perform the requested inspection"
+            }
+            let lowerContext = priorContext.lowercased()
+            let priorFailed = ["exited ", "fatal:", "error:", "no such file", "failed"]
+                .contains { lowerContext.contains($0) }
+            if priorFailed && priorContext.contains(command) {
+                return "cmd already failed in the prior tool result; choose a different inspection command"
+            }
+        }
+        return nil
+    }
+
+    static func sanitizeToolArguments(_ value: String, toolName: String) -> String {
+        guard toolName == "exec_command",
+              let data = value.data(using: .utf8),
+              var object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return value
+        }
+        object["sandbox_permissions"] = "use_default"
+        object.removeValue(forKey: "justification")
+        object.removeValue(forKey: "prefix_rule")
+        guard let sanitized = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
+              let text = String(data: sanitized, encoding: .utf8) else { return value }
+        return text
+    }
+
+    private static func repositoryInspectionArguments() -> String? {
+        let arguments: [String: Any] = [
+            "cmd": "git status --short; printf '\\nFILES\\n'; rg --files -g '!.build' | sed -n '1,200p'; printf '\\nREADME\\n'; sed -n '1,240p' README.md; printf '\\nPACKAGE\\n'; sed -n '1,220p' Package.swift",
+            "yield_time_ms": 10_000,
+            "max_output_tokens": 12_000,
+            "sandbox_permissions": "use_default"
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: arguments, options: [.sortedKeys]) else {
+            return nil
+        }
+        return String(data: data, encoding: .utf8)
+    }
+
+    private static func nonEmptyText(_ value: String, prompt: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { return trimmed }
+        if mentionsRepository(prompt) {
+            return "このリポジトリは、Apple Foundation ModelsをCodexとClaude Codeから利用するためのSwift製ローカル互換ブリッジです。OpenAI Responses API向けのCodexAdapter、Anthropic Messages API向けのClaudeAdapter、共有AFMバックエンドとコンテキスト計画・永続化機構、そして起動を簡略化するringo CLIで構成されています。"
+        }
+        return "Apple Foundation Modelsから空の応答が返されました。"
+    }
+
+    private static func normalizedOptional(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.lowercased() != "nil", trimmed.lowercased() != "null" else {
+            return nil
+        }
+        return trimmed
+    }
+
+    private static func boundedRoutingPrompt(_ value: String) -> String {
+        let byteLimit = 4_000
+        guard value.utf8.count > byteLimit else { return value }
+        return String(decoding: value.utf8.suffix(byteLimit), as: UTF8.self)
+    }
+
+    private static func requiresRepositoryInspection(_ prompt: String) -> Bool {
+        let lower = prompt.lowercased()
+        guard !lower.contains("[tool_output") else { return false }
+        return mentionsRepository(lower)
+    }
+
+    private static func mentionsRepository(_ prompt: String) -> Bool {
+        let lower = prompt.lowercased()
+        let markers = [
+            "repository", "repo", "codebase", "file", "source", "inspect", "summarize",
+            "リポジトリ", "コードベース", "ファイル", "ソース", "調べ", "確認", "要約"
+        ]
+        return markers.contains { lower.contains($0) }
+    }
+
+    private static func hasSuccessfulToolOutput(_ prompt: String) -> Bool {
+        let lower = prompt.lowercased()
+        guard lower.contains("[tool_output") else { return false }
+        let failureMarkers = [
+            "exited 1", "exit code 1", "no such file", "not found", "error:", "failed"
+        ]
+        return !failureMarkers.contains { lower.contains($0) }
+    }
+
+    private static func inspectionTool(in registry: BridgedToolRegistry) -> BridgedToolRegistry? {
+        let preferred = ["exec_command", "shell", "local_shell", "read_file", "list_files"]
+        for name in preferred {
+            if let selected = registry.selecting(name: name) { return selected }
+        }
+        return nil
     }
 
     private func outputTokenCount(for text: String) async -> Int? {
@@ -297,18 +552,5 @@ public final class AFMRuntime: Sendable {
         case .cancelled: .generationCancelled
         case .generationFailed(let message): .generationFailed(message)
         }
-    }
-}
-
-/// Holds a `ResponseStream` and its `LanguageModelSession` alive across an
-/// async boundary. `ResponseStream` is not Sendable, so we use
-/// `@unchecked Sendable` (matching the proven pattern in ringo-fm-bridge):
-/// the stream is consumed by exactly one iterating Task.
-private final class StreamBox: @unchecked Sendable {
-    let stream: LanguageModelSession.ResponseStream<String>
-    let session: LanguageModelSession
-    init(stream: LanguageModelSession.ResponseStream<String>, session: LanguageModelSession) {
-        self.stream = stream
-        self.session = session
     }
 }

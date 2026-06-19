@@ -93,7 +93,7 @@ public enum Routes {
             } catch {
                 throw BridgeError.internalError("context planning failed: \(error)")
             }
-            let prompt = prepared.plan.prompt
+            let prompt = prepared.prompt
             let estTokens = prepared.plan.estimatedTokens
             if prepared.plan.truncated {
                 services.logger.warning(
@@ -122,11 +122,11 @@ public enum Routes {
             let afmRequest = AFMGenerateRequest(
                 responseID: responseID,
                 model: body.model,
-                instructions: normalized.instructions,
+                instructions: prepared.instructions,
                 prompt: prompt,
                 stream: stream,
                 temperature: body.temperature,
-                maxOutputTokens: body.max_output_tokens,
+                maxOutputTokens: body.max_output_tokens ?? PromptBuilder.defaultOutputReserve,
                 topP: body.top_p,
                 toolRegistry: toolRegistry,
                 conversationKey: prepared.sessionKey,
@@ -275,10 +275,10 @@ private func streamingResponse(
 
             do {
                 try await request.body.consumeWithCancellationOnInboundClose { _ in
-                    let stream = try await afm.stream(afmRequest)
                     var lastLen = 0
                     var fullText = ""
                     do {
+                        let stream = try await afm.stream(afmRequest)
                         for try await snapshot in stream {
                             let cumulative = snapshot.cumulativeText
                             if cumulative.count > lastLen {

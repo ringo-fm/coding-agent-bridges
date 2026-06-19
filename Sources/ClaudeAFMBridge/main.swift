@@ -19,7 +19,6 @@ struct BridgeApp: AsyncParsableCommand {
             logLevel: logLevel,
             debug: debug
         )
-        let app = try await buildApplication(config: config)
-        try await app.runService()
+        try await runClaudeBridge(config: config)
     }
 }

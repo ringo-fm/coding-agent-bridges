@@ -32,6 +32,23 @@ public func buildApplication(config: BridgeConfig) async throws -> some Applicat
     return app
 }
 
+/// Run a configured Claude-compatible bridge until the task is cancelled.
+public func runClaudeBridge(config: BridgeConfig) async throws {
+    let app = try await buildApplication(config: config)
+    try await app.runService()
+}
+
+/// Convenience entry point for launchers that do not need adapter-specific configuration.
+public func runClaudeBridge(host: String, port: Int, authToken: String) async throws {
+    try await runClaudeBridge(config: BridgeConfig(
+        host: host,
+        port: port,
+        authToken: authToken,
+        logLevel: .warning,
+        debug: false
+    ))
+}
+
 func buildRouter(
     config: BridgeConfig,
     afm: AFMRuntime,
