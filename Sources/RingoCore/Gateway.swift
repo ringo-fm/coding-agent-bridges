@@ -32,12 +32,15 @@ public struct GatewayConfiguration: Sendable, Equatable {
         self.retentionDays = retentionDays
     }
 
-    public static func fromEnvironment(host: String, port: Int) -> Self {
-        let environment = ProcessInfo.processInfo.environment
+    public static func fromEnvironment(
+        host: String,
+        port: Int,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Self {
         return .init(
             host: host,
             port: port,
-            authToken: environment["AFM_BRIDGE_API_KEY"] ?? RingoRuntime.localToken,
+            authToken: RingoRuntime.gatewayToken(environment: environment),
             contextMode: ContextStorageMode(environmentValue: environment["AFM_BRIDGE_CONTEXT_MODE"]),
             contextPath: environment["AFM_BRIDGE_CONTEXT_PATH"],
             retentionDays: Int(environment["AFM_BRIDGE_CONTEXT_RETENTION_DAYS"] ?? "30") ?? 30

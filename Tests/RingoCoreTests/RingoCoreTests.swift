@@ -49,10 +49,50 @@ import HTTPTypes
     }
 
     @Test func serveInstructionsContainExpectedIntegration() {
-        let instructions = RingoRuntime.gatewayServeInstructions(host: "127.0.0.1", port: 8765)
+        let instructions = RingoRuntime.gatewayServeInstructions(
+            host: "127.0.0.1", port: 8765, environment: ["AFM_BRIDGE_API_KEY": "dev-token"]
+        )
         #expect(instructions.contains("/dashboard"))
         #expect(instructions.contains("ANTHROPIC_BASE_URL='http://127.0.0.1:8765/anthropic'"))
         #expect(instructions.contains("/openai/v1"))
+        #expect(instructions.contains("ANTHROPIC_AUTH_TOKEN='dev-token'"))
+        #expect(instructions.contains("AFM_BRIDGE_API_KEY='dev-token'"))
+    }
+
+    @Test func configuredGatewayTokenIsSharedWithClaudeAndCodexChildren() throws {
+        let inherited = ["AFM_BRIDGE_API_KEY": "dev-token"]
+        let claude = try RingoRuntime.invocation(
+            for: .claude,
+            host: "127.0.0.1",
+            port: 9001,
+            arguments: [],
+            inheritedEnvironment: inherited,
+            executable: "/tmp/claude"
+        )
+        let codex = try RingoRuntime.invocation(
+            for: .codex,
+            host: "127.0.0.1",
+            port: 9002,
+            arguments: [],
+            inheritedEnvironment: inherited,
+            executable: "/tmp/codex"
+        )
+        let gateway = GatewayConfiguration.fromEnvironment(
+            host: "127.0.0.1", port: 9000, environment: inherited
+        )
+
+        #expect(claude.environment["ANTHROPIC_AUTH_TOKEN"] == "dev-token")
+        #expect(claude.environment["ANTHROPIC_API_KEY"] == "dev-token")
+        #expect(codex.environment["AFM_BRIDGE_API_KEY"] == "dev-token")
+        #expect(gateway.authToken == "dev-token")
+    }
+
+    @Test func emptyGatewayTokenFallsBackConsistently() {
+        let environment = ["AFM_BRIDGE_API_KEY": ""]
+        #expect(RingoRuntime.gatewayToken(environment: environment) == RingoRuntime.localToken)
+        #expect(GatewayConfiguration.fromEnvironment(
+            host: "127.0.0.1", port: 9000, environment: environment
+        ).authToken == RingoRuntime.localToken)
     }
 
     @Test func childExitStatusIsPreserved() async throws {

@@ -57,6 +57,15 @@ public struct ChildInvocation: Equatable, Sendable {
 public enum RingoRuntime {
     public static let localToken = "ringo-local"
 
+    public static func gatewayToken(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String {
+        guard let configured = environment["AFM_BRIDGE_API_KEY"], !configured.isEmpty else {
+            return localToken
+        }
+        return configured
+    }
+
     public static func agent(named name: String) throws -> RingoAgent {
         guard let agent = RingoAgent(rawValue: name) else { throw RingoError.invalidAgent(name) }
         return agent
@@ -74,12 +83,13 @@ public enum RingoRuntime {
         let childArguments = arguments.first == "--" ? Array(arguments.dropFirst()) : arguments
         var environment = inheritedEnvironment
         let gatewayURL = "http://\(host):\(port)"
+        let token = gatewayToken(environment: inheritedEnvironment)
 
         switch agent {
         case .claude:
             environment["ANTHROPIC_BASE_URL"] = gatewayURL + "/anthropic"
-            environment["ANTHROPIC_AUTH_TOKEN"] = localToken
-            environment["ANTHROPIC_API_KEY"] = localToken
+            environment["ANTHROPIC_AUTH_TOKEN"] = token
+            environment["ANTHROPIC_API_KEY"] = token
             environment["ANTHROPIC_MODEL"] = agent.model
             environment["ANTHROPIC_SMALL_FAST_MODEL"] = agent.model
             environment["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = agent.model
@@ -88,7 +98,7 @@ public enum RingoRuntime {
             environment["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] = "1"
             return ChildInvocation(executable: path, arguments: childArguments, environment: environment)
         case .codex:
-            environment["AFM_BRIDGE_API_KEY"] = localToken
+            environment["AFM_BRIDGE_API_KEY"] = token
             let overrides = codexOverrides(baseURL: gatewayURL + "/openai/v1", model: agent.model)
             return ChildInvocation(executable: path, arguments: overrides + childArguments, environment: environment)
         }
@@ -247,8 +257,13 @@ public enum RingoRuntime {
         }
     }
 
-    public static func gatewayServeInstructions(host: String, port: Int) -> String {
+    public static func gatewayServeInstructions(
+        host: String,
+        port: Int,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String {
         let baseURL = "http://\(host):\(port)"
+        let token = gatewayToken(environment: environment)
         let codex = (["codex"] + codexOverrides(baseURL: baseURL + "/openai/v1", model: RingoAgent.codex.model))
             .map(shellQuote).joined(separator: " ")
         return """
@@ -257,10 +272,10 @@ public enum RingoRuntime {
 
         Claude:
         export ANTHROPIC_BASE_URL='\(baseURL)/anthropic'
-        export ANTHROPIC_AUTH_TOKEN='\(localToken)'
+        export ANTHROPIC_AUTH_TOKEN='\(token)'
 
         Codex:
-        export AFM_BRIDGE_API_KEY='\(localToken)'
+        export AFM_BRIDGE_API_KEY='\(token)'
         \(codex)
         """
     }
