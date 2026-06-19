@@ -52,6 +52,7 @@ public struct AgentGenerationRequest: Sendable, Equatable {
     public let topP: Double?
     public let conversationKey: String?
     public let contextFingerprint: String?
+    public let resultingContextFingerprint: String?
     public let incrementalMessages: [AgentMessage]?
 
     public init(
@@ -64,6 +65,7 @@ public struct AgentGenerationRequest: Sendable, Equatable {
         topP: Double? = nil,
         conversationKey: String? = nil,
         contextFingerprint: String? = nil,
+        resultingContextFingerprint: String? = nil,
         incrementalMessages: [AgentMessage]? = nil
     ) {
         self.model = model
@@ -75,6 +77,7 @@ public struct AgentGenerationRequest: Sendable, Equatable {
         self.topP = topP
         self.conversationKey = conversationKey
         self.contextFingerprint = contextFingerprint
+        self.resultingContextFingerprint = resultingContextFingerprint
         self.incrementalMessages = incrementalMessages
     }
 }

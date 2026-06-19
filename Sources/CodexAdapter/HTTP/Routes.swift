@@ -131,6 +131,7 @@ public enum Routes {
                 toolRegistry: toolRegistry,
                 conversationKey: prepared.sessionKey,
                 sessionFingerprint: prepared.sessionFingerprint,
+                resultingSessionFingerprint: prepared.resultingSessionFingerprint,
                 incrementalPrompt: prepared.incrementalPrompt
             )
 

@@ -15,6 +15,7 @@ public struct ConversationRecord: Codable, Sendable, Equatable {
     public let protocolName: String
     public let fingerprint: String
     public let turnHashes: [String]
+    public let parentConversationID: String?
     public let updatedAt: Date
 
     public init(
@@ -22,12 +23,14 @@ public struct ConversationRecord: Codable, Sendable, Equatable {
         protocolName: String,
         fingerprint: String,
         turnHashes: [String],
+        parentConversationID: String? = nil,
         updatedAt: Date = Date()
     ) {
         self.id = id
         self.protocolName = protocolName
         self.fingerprint = fingerprint
         self.turnHashes = turnHashes
+        self.parentConversationID = parentConversationID
         self.updatedAt = updatedAt
     }
 }

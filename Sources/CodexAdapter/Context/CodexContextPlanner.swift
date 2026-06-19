@@ -6,6 +6,7 @@ struct PreparedCodexContext: Sendable {
     let plan: ContextPlan
     let sessionKey: String
     let sessionFingerprint: String
+    let resultingSessionFingerprint: String
     let incrementalPrompt: String
 }
 
@@ -21,20 +22,24 @@ enum CodexContextPlanner {
         var candidates: [ContextSegment] = []
         var previousHashes: [String] = []
         var previousRecord: ConversationRecord?
+        var chain: [ConversationRecord] = []
         if let previousID = request.previous_response_id,
            let previous = try await ledger.conversation(id: previousID) {
             previousRecord = previous
             previousHashes = previous.turnHashes
-            let prior = try await ledger.segments(for: previous.id, limit: 64)
-            candidates.append(contentsOf: prior.map {
-                ContextSegment(
-                    id: "prior-\($0.id)",
-                    kind: $0.kind == .unresolvedToolResult ? .unresolvedToolResult : .olderConversation,
-                    text: $0.text,
-                    sourceTurnID: $0.sourceTurnID,
-                    metadata: $0.metadata
-                )
-            })
+            chain = try await ancestry(endingAt: previous, ledger: ledger)
+            for record in chain {
+                let prior = try await ledger.segments(for: record.id, limit: 64)
+                candidates.append(contentsOf: prior.map {
+                    ContextSegment(
+                        id: "prior-\(record.id)-\($0.id)",
+                        kind: $0.kind == .unresolvedToolResult ? .unresolvedToolResult : .olderConversation,
+                        text: $0.text,
+                        sourceTurnID: $0.sourceTurnID,
+                        metadata: $0.metadata
+                    )
+                })
+            }
         }
         candidates.append(contentsOf: current)
 
@@ -53,20 +58,21 @@ enum CodexContextPlanner {
 
         let currentHashes = current.filter { $0.sourceTurnID != nil }.map { ConversationFingerprint.digest($0.text) }
         let toolCatalog = request.tools?.map { ($0.name ?? $0.type) + ":" + ($0.description ?? "") }.joined(separator: "\n") ?? ""
-        let sessionFingerprint = ConversationFingerprint.conversationKey(
+        let baseFingerprint = ConversationFingerprint.conversationKey(
             protocolName: "codex",
             instructions: normalized.instructions ?? "",
             toolCatalog: toolCatalog,
             turnHashes: []
         )
-        let sessionKey = previousRecord?.fingerprint
-            .split(separator: "|", maxSplits: 1).last.map(String.init) ?? responseID
-        let fingerprint = sessionFingerprint + "|" + sessionKey
+        let sessionKey = chain.first?.id ?? responseID
+        let sessionFingerprint = baseFingerprint + "|head:" + (request.previous_response_id ?? "root")
+        let resultingSessionFingerprint = baseFingerprint + "|head:" + responseID
         let conversation = ConversationRecord(
             id: responseID,
             protocolName: "codex",
-            fingerprint: fingerprint,
-            turnHashes: previousHashes + currentHashes
+            fingerprint: baseFingerprint,
+            turnHashes: previousHashes + currentHashes,
+            parentConversationID: previousRecord?.id
         )
         try await ledger.saveConversation(conversation)
         for segment in current {
@@ -96,10 +102,27 @@ enum CodexContextPlanner {
             plan: plan,
             sessionKey: sessionKey,
             sessionFingerprint: sessionFingerprint,
+            resultingSessionFingerprint: resultingSessionFingerprint,
             incrementalPrompt: current
                 .filter { $0.kind != .instruction && $0.kind != .requiredTool }
                 .map(\.text).joined(separator: "\n\n")
         )
+    }
+
+    private static func ancestry(
+        endingAt record: ConversationRecord,
+        ledger: any ContextLedger,
+        limit: Int = 64
+    ) async throws -> [ConversationRecord] {
+        var reversed: [ConversationRecord] = []
+        var current: ConversationRecord? = record
+        var visited: Set<String> = []
+        while let node = current, reversed.count < limit, visited.insert(node.id).inserted {
+            reversed.append(node)
+            guard let parentID = node.parentConversationID else { break }
+            current = try await ledger.conversation(id: parentID)
+        }
+        return reversed.reversed()
     }
 
     private static func makeSegments(

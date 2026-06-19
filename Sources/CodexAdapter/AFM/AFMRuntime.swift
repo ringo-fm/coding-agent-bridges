@@ -17,6 +17,7 @@ public struct AFMGenerateRequest: Sendable {
     public let toolRegistry: BridgedToolRegistry?
     public let conversationKey: String?
     public let sessionFingerprint: String?
+    public let resultingSessionFingerprint: String?
     public let incrementalPrompt: String?
 
     public init(
@@ -31,6 +32,7 @@ public struct AFMGenerateRequest: Sendable {
         toolRegistry: BridgedToolRegistry? = nil,
         conversationKey: String? = nil,
         sessionFingerprint: String? = nil,
+        resultingSessionFingerprint: String? = nil,
         incrementalPrompt: String? = nil
     ) {
         self.responseID = responseID
@@ -44,6 +46,7 @@ public struct AFMGenerateRequest: Sendable {
         self.toolRegistry = toolRegistry
         self.conversationKey = conversationKey
         self.sessionFingerprint = sessionFingerprint
+        self.resultingSessionFingerprint = resultingSessionFingerprint
         self.incrementalPrompt = incrementalPrompt
     }
 }
@@ -158,6 +161,7 @@ public final class AFMRuntime: Sendable {
                     topP: request.topP,
                     conversationKey: request.conversationKey,
                     contextFingerprint: request.sessionFingerprint,
+                    resultingContextFingerprint: request.resultingSessionFingerprint,
                     incrementalMessages: incremental
                 ))
                 return AFMGenerateResult(

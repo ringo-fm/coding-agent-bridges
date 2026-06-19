@@ -62,6 +62,7 @@ public final class FoundationModelsBackend: AgentModelBackend, Sendable {
                 text = try await sessionPool.respond(
                     key: key,
                     fingerprint: request.contextFingerprint ?? ConversationFingerprint.digest(components.instructions),
+                    resultingFingerprint: request.resultingContextFingerprint,
                     instructions: components.instructions,
                     fullPrompt: components.prompt,
                     incrementalPrompt: incremental,

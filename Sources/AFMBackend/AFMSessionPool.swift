@@ -45,6 +45,7 @@ public actor AFMSessionPool {
     public func respond(
         key: String,
         fingerprint: String,
+        resultingFingerprint: String? = nil,
         instructions: String,
         fullPrompt: String,
         incrementalPrompt: String?,
@@ -76,6 +77,9 @@ public actor AFMSessionPool {
 
         let response = try await entry.session.respond(to: prompt, options: options)
         if var current = entries[key] {
+            if let resultingFingerprint {
+                current = Entry(session: current.session, fingerprint: resultingFingerprint, lastUsed: current.lastUsed)
+            }
             current.lastUsed = Date()
             entries[key] = current
         }

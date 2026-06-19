@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import XCTest
 @testable import AgentBridgeCore
 
@@ -26,6 +27,20 @@ final class ContextPlannerTests: XCTestCase {
         XCTAssertEqual(plan.segments.map(\.id), ["current"])
         XCTAssertLessThanOrEqual(plan.estimatedTokens, 30)
         XCTAssertTrue(plan.truncated)
+    }
+
+    func testInstructionsAndCurrentRequestAreProtectedUnderPressure() {
+        let plan = ContextPlanner.plan(segments: [
+            ContextSegment(id: "instruction", kind: .instruction, text: String(repeating: "system ", count: 100)),
+            ContextSegment(id: "retrieved", kind: .retrievedSource, text: String(repeating: "source ", count: 100)),
+            ContextSegment(id: "recent", kind: .recentConversation, text: String(repeating: "recent ", count: 100)),
+            ContextSegment(id: "current", kind: .currentRequest, text: "do the requested work"),
+        ], budget: 20)
+
+        XCTAssertTrue(plan.segments.contains { $0.id == "instruction" })
+        XCTAssertTrue(plan.segments.contains { $0.id == "current" })
+        XCTAssertFalse(plan.segments.contains { $0.id == "retrieved" })
+        XCTAssertFalse(plan.segments.contains { $0.id == "recent" })
     }
 
     func testFingerprintDetectsAppendOnlyTurns() {
@@ -92,6 +107,50 @@ final class ContextLedgerTests: XCTestCase {
         }
 
         try? FileManager.default.removeItem(at: directory)
+    }
+
+    func testSQLiteScopesDuplicateSegmentIDsByConversation() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let ledger = try SQLiteContextLedger(path: directory.appendingPathComponent("context.sqlite3").path)
+        for id in ["one", "two"] {
+            try await ledger.saveConversation(ConversationRecord(id: id, protocolName: "test", fingerprint: id, turnHashes: []))
+            try await ledger.append(ContextSegment(id: "shared", kind: .instruction, text: "segment for \(id)"), to: id)
+        }
+        let one = try await ledger.segments(for: "one", limit: 10)
+        let two = try await ledger.segments(for: "two", limit: 10)
+        XCTAssertEqual(one.map(\.text), ["segment for one"])
+        XCTAssertEqual(two.map(\.text), ["segment for two"])
+    }
+
+    func testSQLiteMigratesV1WithoutLosingTurnsOrCapsule() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let path = directory.appendingPathComponent("context.sqlite3").path
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(path, &db), SQLITE_OK)
+        defer { if let db { sqlite3_close(db) } }
+        let capsule = #"{"objective":"keep me","constraints":[],"decisions":[],"filesAndSymbols":[],"completedActions":[],"failedAttempts":[],"pendingTasks":[],"sourceTurnIDs":[]}"#
+        let sql = """
+        CREATE TABLE conversations(id TEXT PRIMARY KEY, protocol_name TEXT NOT NULL, fingerprint TEXT NOT NULL, turn_hashes_json TEXT NOT NULL, capsule_json TEXT, updated_at REAL NOT NULL);
+        CREATE INDEX conversations_fingerprint ON conversations(fingerprint, updated_at DESC);
+        CREATE TABLE turns(id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, ordinal INTEGER NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL, source_turn_id TEXT, metadata_json TEXT NOT NULL, created_at REAL NOT NULL, UNIQUE(conversation_id, ordinal));
+        CREATE TABLE artifacts(hash TEXT PRIMARY KEY, text TEXT NOT NULL, metadata_json TEXT NOT NULL, created_at REAL NOT NULL, last_accessed_at REAL NOT NULL);
+        CREATE VIRTUAL TABLE artifact_fts USING fts5(hash UNINDEXED, text, metadata);
+        INSERT INTO conversations VALUES('legacy','codex','fingerprint','[\"one\"]','\(capsule)',0);
+        INSERT INTO turns VALUES('turn','legacy',0,'recentConversation','legacy text',NULL,'{}',0);
+        PRAGMA user_version=1;
+        """
+        XCTAssertEqual(sqlite3_exec(db, sql, nil, nil, nil), SQLITE_OK)
+        sqlite3_close(db)
+        db = nil
+
+        let migrated = try SQLiteContextLedger(path: path)
+        let segments = try await migrated.segments(for: "legacy", limit: 10)
+        let restoredCapsule = try await migrated.capsule(for: "legacy")
+        let conversation = try await migrated.conversation(id: "legacy")
+        XCTAssertEqual(segments.map(\.text), ["legacy text"])
+        XCTAssertEqual(restoredCapsule?.objective, "keep me")
+        XCTAssertNil(conversation?.parentConversationID)
     }
 }
 

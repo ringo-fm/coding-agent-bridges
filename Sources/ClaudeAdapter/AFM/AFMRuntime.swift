@@ -42,6 +42,7 @@ final class AFMRuntime: Sendable {
         options: GenerationOptions,
         conversationKey: String? = nil,
         sessionFingerprint: String? = nil,
+        resultingSessionFingerprint: String? = nil,
         incrementalPrompt: String? = nil
     ) async throws -> GenerateResult {
         let result = try await sharedBackend.generate(AgentGenerationRequest(
@@ -54,6 +55,7 @@ final class AFMRuntime: Sendable {
             temperature: options.temperature,
             conversationKey: conversationKey,
             contextFingerprint: sessionFingerprint,
+            resultingContextFingerprint: resultingSessionFingerprint,
             incrementalMessages: incrementalPrompt.map { [AgentMessage(role: .user, text: $0)] }
         ))
         return GenerateResult(

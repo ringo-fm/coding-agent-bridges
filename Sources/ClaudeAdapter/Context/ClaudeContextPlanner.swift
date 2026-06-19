@@ -8,6 +8,7 @@ struct PreparedClaudeContext: Sendable {
     let prompt: String
     let sessionKey: String
     let sessionFingerprint: String
+    let resultingSessionFingerprint: String
     let incrementalPrompt: String
 }
 
@@ -82,7 +83,8 @@ enum ClaudeContextPlanner {
             instructions: instructions.isEmpty ? TranscriptBuilder.header : instructions,
             prompt: prompt.isEmpty ? "[user] Continue." : prompt,
             sessionKey: conversation.id,
-            sessionFingerprint: baseFingerprint,
+            sessionFingerprint: baseFingerprint + "|head:" + ConversationFingerprint.digest(turnHashes.dropLast().joined(separator: "|")),
+            resultingSessionFingerprint: baseFingerprint + "|head:" + ConversationFingerprint.digest(turnHashes.joined(separator: "|")),
             incrementalPrompt: segments.last(where: { $0.kind == .currentRequest })?.text ?? prompt
         )
     }

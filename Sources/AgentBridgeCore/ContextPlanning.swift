@@ -115,7 +115,15 @@ public struct ContextPlan: Sendable, Equatable {
 public enum ContextPlanner {
     public static func plan(segments: [ContextSegment], budget: Int) -> ContextPlan {
         let safeBudget = max(1, budget)
-        let ranked = segments.enumerated().sorted { lhs, rhs in
+        let protectedKinds: Set<ContextSegmentKind> = [.instruction, .currentRequest]
+        let protected = segments.enumerated()
+            .filter { protectedKinds.contains($0.element.kind) }
+            .sorted { lhs, rhs in
+                let lp = priority(lhs.element.kind)
+                let rp = priority(rhs.element.kind)
+                return lp == rp ? lhs.offset < rhs.offset : lp > rp
+            }
+        let ranked = segments.enumerated().filter { !protectedKinds.contains($0.element.kind) }.sorted { lhs, rhs in
             let lp = priority(lhs.element.kind)
             let rp = priority(rhs.element.kind)
             if lp != rp { return lp > rp }
@@ -126,6 +134,16 @@ public enum ContextPlanner {
         var omitted: [String] = []
         var used = 0
 
+        for (position, item) in protected.enumerated() {
+            let remainingSegments = protected.count - position - 1
+            let available = max(1, safeBudget - used - remainingSegments)
+            let segment = item.element.estimatedTokens <= available
+                ? item.element
+                : bound(item.element, to: available)
+            selected.append((item.offset, segment))
+            used += segment.estimatedTokens
+        }
+
         for (index, segment) in ranked {
             let cost = segment.estimatedTokens
             if used + cost <= safeBudget {
@@ -134,13 +152,7 @@ public enum ContextPlanner {
                 continue
             }
 
-            if segment.kind == .currentRequest && used < safeBudget {
-                let bounded = bound(segment, to: safeBudget - used)
-                selected.append((index, bounded))
-                used += bounded.estimatedTokens
-            } else {
-                omitted.append(segment.id)
-            }
+            omitted.append(segment.id)
         }
 
         let ordered = selected.sorted { $0.0 < $1.0 }.map(\.1)
@@ -160,19 +172,21 @@ public enum ContextPlanner {
 
     private static func priority(_ kind: ContextSegmentKind) -> Int {
         switch kind {
+        case .instruction: 800
         case .currentRequest: 700
         case .unresolvedToolResult: 600
         case .requiredTool: 500
         case .retrievedSource: 450
         case .recentConversation: 400
         case .summary: 350
-        case .instruction: 300
         case .olderConversation: 100
         }
     }
 
     private static func bound(_ segment: ContextSegment, to tokens: Int) -> ContextSegment {
-        let marker = "[...current request truncated...]\n"
+        let marker = segment.kind == .instruction
+            ? "[...instruction truncated...]\n"
+            : "[...current request truncated...]\n"
         let byteBudget = max(1, tokens * 4)
         let includeMarker = byteBudget > marker.utf8.count + 8
         let contentBudget = max(1, byteBudget - (includeMarker ? marker.utf8.count : 0))

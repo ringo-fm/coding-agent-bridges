@@ -121,6 +121,7 @@ func handleMessages(
             options: options,
             conversationKey: prepared.sessionKey,
             sessionFingerprint: prepared.sessionFingerprint,
+            resultingSessionFingerprint: prepared.resultingSessionFingerprint,
             incrementalPrompt: prepared.incrementalPrompt
         )
         return jsonResponse(OutputMapper.toTextMessage(

@@ -87,17 +87,19 @@ public actor SQLiteContextLedger: ContextLedger {
         let hashes = try json(conversation.turnHashes)
         try execute(
             """
-            INSERT INTO conversations(id, protocol_name, fingerprint, turn_hashes_json, updated_at)
-            VALUES(?, ?, ?, ?, ?)
+            INSERT INTO conversations(id, protocol_name, fingerprint, turn_hashes_json, parent_conversation_id, updated_at)
+            VALUES(?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
               protocol_name=excluded.protocol_name,
               fingerprint=excluded.fingerprint,
               turn_hashes_json=excluded.turn_hashes_json,
+              parent_conversation_id=excluded.parent_conversation_id,
               updated_at=excluded.updated_at
             """,
             bindings: [
                 .text(conversation.id), .text(conversation.protocolName),
                 .text(conversation.fingerprint), .text(hashes),
+                conversation.parentConversationID.map(Binding.text) ?? .null,
                 .double(conversation.updatedAt.timeIntervalSince1970),
             ]
         )
@@ -120,7 +122,7 @@ public actor SQLiteContextLedger: ContextLedger {
               COALESCE((SELECT MAX(ordinal) + 1 FROM turns WHERE conversation_id = ?), 0),
               ?, ?, ?, ?, ?
             )
-            ON CONFLICT(id) DO NOTHING
+            ON CONFLICT(conversation_id, id) DO NOTHING
             """,
             bindings: [
                 .text(segment.id), .text(conversationID), .text(conversationID),
@@ -261,7 +263,7 @@ public actor SQLiteContextLedger: ContextLedger {
 
     private func readConversation(where clause: String, value: String) throws -> ConversationRecord? {
         let statement = try prepare(
-            "SELECT id, protocol_name, fingerprint, turn_hashes_json, updated_at FROM conversations WHERE \(clause) ORDER BY updated_at DESC LIMIT 1"
+            "SELECT id, protocol_name, fingerprint, turn_hashes_json, parent_conversation_id, updated_at FROM conversations WHERE \(clause) ORDER BY updated_at DESC LIMIT 1"
         )
         defer { sqlite3_finalize(statement) }
         try bind([.text(value)], to: statement)
@@ -274,25 +276,32 @@ public actor SQLiteContextLedger: ContextLedger {
             protocolName: text(statement, 1),
             fingerprint: text(statement, 2),
             turnHashes: try decodeJSON(text(statement, 3)),
-            updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 4))
+            parentConversationID: optionalText(statement, 4),
+            updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 5))
         )
     }
 
     private static func migrate(db: OpaquePointer) throws {
         try rawExecute(db, "PRAGMA journal_mode=WAL")
         try rawExecute(db, "PRAGMA foreign_keys=ON")
+        let version = try userVersion(db)
+        if version == 1 {
+            try migrateV1ToV2(db)
+            return
+        }
         try rawExecute(db, """
             CREATE TABLE IF NOT EXISTS conversations(
               id TEXT PRIMARY KEY,
               protocol_name TEXT NOT NULL,
               fingerprint TEXT NOT NULL,
               turn_hashes_json TEXT NOT NULL,
+              parent_conversation_id TEXT,
               capsule_json TEXT,
               updated_at REAL NOT NULL
             );
             CREATE INDEX IF NOT EXISTS conversations_fingerprint ON conversations(fingerprint, updated_at DESC);
             CREATE TABLE IF NOT EXISTS turns(
-              id TEXT PRIMARY KEY,
+              id TEXT NOT NULL,
               conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
               ordinal INTEGER NOT NULL,
               kind TEXT NOT NULL,
@@ -300,6 +309,7 @@ public actor SQLiteContextLedger: ContextLedger {
               source_turn_id TEXT,
               metadata_json TEXT NOT NULL,
               created_at REAL NOT NULL,
+              PRIMARY KEY(conversation_id, id),
               UNIQUE(conversation_id, ordinal)
             );
             CREATE TABLE IF NOT EXISTS artifacts(
@@ -310,7 +320,46 @@ public actor SQLiteContextLedger: ContextLedger {
               last_accessed_at REAL NOT NULL
             );
             CREATE VIRTUAL TABLE IF NOT EXISTS artifact_fts USING fts5(hash UNINDEXED, text, metadata);
-            PRAGMA user_version=1;
+            PRAGMA user_version=2;
+            """)
+    }
+
+    private static func userVersion(_ db: OpaquePointer) throws -> Int32 {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "PRAGMA user_version", -1, &statement, nil) == SQLITE_OK,
+              let statement else {
+            throw ContextLedgerError.sqlite(operation: "read schema version", message: String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            throw ContextLedgerError.sqlite(operation: "read schema version", message: String(cString: sqlite3_errmsg(db)))
+        }
+        return sqlite3_column_int(statement, 0)
+    }
+
+    private static func migrateV1ToV2(_ db: OpaquePointer) throws {
+        try rawExecute(db, """
+            PRAGMA foreign_keys=OFF;
+            BEGIN IMMEDIATE;
+            ALTER TABLE conversations ADD COLUMN parent_conversation_id TEXT;
+            ALTER TABLE turns RENAME TO turns_v1;
+            CREATE TABLE turns(
+              id TEXT NOT NULL,
+              conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+              ordinal INTEGER NOT NULL,
+              kind TEXT NOT NULL,
+              text TEXT NOT NULL,
+              source_turn_id TEXT,
+              metadata_json TEXT NOT NULL,
+              created_at REAL NOT NULL,
+              PRIMARY KEY(conversation_id, id),
+              UNIQUE(conversation_id, ordinal)
+            );
+            INSERT INTO turns SELECT id, conversation_id, ordinal, kind, text, source_turn_id, metadata_json, created_at FROM turns_v1;
+            DROP TABLE turns_v1;
+            PRAGMA user_version=2;
+            COMMIT;
+            PRAGMA foreign_keys=ON;
             """)
     }
 
