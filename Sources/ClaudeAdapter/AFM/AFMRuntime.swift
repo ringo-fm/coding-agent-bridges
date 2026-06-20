@@ -25,9 +25,9 @@ final class AFMRuntime: Sendable {
     let model: SystemLanguageModel
     private let sharedBackend: FoundationModelsBackend
 
-    init() {
+    init(sharedBackend: FoundationModelsBackend = FoundationModelsBackend()) {
         self.model = .default
-        self.sharedBackend = FoundationModelsBackend()
+        self.sharedBackend = sharedBackend
     }
 
     var availability: SystemLanguageModel.Availability { model.availability }

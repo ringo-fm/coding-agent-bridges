@@ -12,6 +12,7 @@ let package = Package(
         .library(name: "BridgeHTTP", targets: ["BridgeHTTP"]),
         .library(name: "CodexAdapter", targets: ["CodexAdapter"]),
         .library(name: "ClaudeAdapter", targets: ["ClaudeAdapter"]),
+        .library(name: "RingoCore", targets: ["RingoCore"]),
         .executable(name: "ringo", targets: ["RingoCLI"]),
         .executable(name: "codex-afm-bridge", targets: ["CodexAFMBridge"]),
         .executable(name: "claude-afm-bridge", targets: ["ClaudeAFMBridge"]),
@@ -70,9 +71,6 @@ let package = Package(
             ]
         ),
         .executableTarget(
-            name: "RingoCLI"
-        ),
-        .executableTarget(
             name: "CodexAFMBridge",
             dependencies: [
                 "CodexAdapter",
@@ -86,6 +84,26 @@ let package = Package(
                 "ClaudeAdapter",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Hummingbird", package: "hummingbird"),
+            ]
+        ),
+        .target(
+            name: "RingoCore",
+            dependencies: [
+                "AgentBridgeCore",
+                "AFMBackend",
+                "BridgeHTTP",
+                "ClaudeAdapter",
+                "CodexAdapter",
+                .product(name: "Hummingbird", package: "hummingbird"),
+                .product(name: "HTTPTypes", package: "swift-http-types"),
+                .product(name: "Logging", package: "swift-log"),
+            ]
+        ),
+        .executableTarget(
+            name: "RingoCLI",
+            dependencies: [
+                "RingoCore",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
         .testTarget(
@@ -107,6 +125,14 @@ let package = Package(
             name: "ClaudeAdapterTests",
             dependencies: [
                 "ClaudeAdapter",
+                .product(name: "HummingbirdTesting", package: "hummingbird"),
+                .product(name: "HTTPTypes", package: "swift-http-types"),
+            ]
+        ),
+        .testTarget(
+            name: "RingoCoreTests",
+            dependencies: [
+                "RingoCore",
                 .product(name: "HummingbirdTesting", package: "hummingbird"),
                 .product(name: "HTTPTypes", package: "swift-http-types"),
             ]

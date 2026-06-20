@@ -52,8 +52,10 @@ public actor SQLiteContextLedger: ContextLedger {
     private let retentionInterval: TimeInterval
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
+    private let path: String
 
     public init(path: String, retentionDays: Int = 30) throws {
+        self.path = path
         let url = URL(fileURLWithPath: path)
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(),
@@ -81,6 +83,35 @@ public actor SQLiteContextLedger: ContextLedger {
         }
         handle = SQLiteDatabaseHandle(opened)
         retentionInterval = TimeInterval(max(1, retentionDays) * 86_400)
+    }
+
+    public func storageStatus() -> ContextStorageStatus { .init(mode: .persistent, path: path) }
+
+    public func listConversations(limit: Int) throws -> [SessionSummary] {
+        let statement = try prepare(
+            """
+            SELECT c.id, c.protocol_name, c.updated_at, c.parent_conversation_id,
+                   json_array_length(c.turn_hashes_json), COUNT(t.id), c.capsule_json IS NOT NULL
+            FROM conversations c LEFT JOIN turns t ON t.conversation_id = c.id
+            GROUP BY c.id ORDER BY c.updated_at DESC LIMIT ?
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+        try bind([.integer(Int64(max(0, limit)))], to: statement)
+        var result: [SessionSummary] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            result.append(SessionSummary(
+                id: text(statement, 0),
+                protocolName: text(statement, 1),
+                updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 2)),
+                parentConversationID: optionalText(statement, 3),
+                turnCount: Int(sqlite3_column_int(statement, 4)),
+                segmentCount: Int(sqlite3_column_int(statement, 5)),
+                hasCapsule: sqlite3_column_int(statement, 6) != 0
+            ))
+        }
+        try checkRead(statement, operation: "list conversations")
+        return result
     }
 
     public func saveConversation(_ conversation: ConversationRecord) throws {
@@ -190,7 +221,10 @@ public actor SQLiteContextLedger: ContextLedger {
                 """
                 INSERT INTO artifacts(hash, text, metadata_json, created_at, last_accessed_at)
                 VALUES(?, ?, ?, ?, ?)
-                ON CONFLICT(hash) DO UPDATE SET last_accessed_at=excluded.last_accessed_at
+                ON CONFLICT(hash) DO UPDATE SET
+                  text=excluded.text,
+                  metadata_json=excluded.metadata_json,
+                  last_accessed_at=excluded.last_accessed_at
                 """,
                 bindings: [.text(hash), .text(text), .text(metadataJSON), .double(now), .double(now)]
             )
@@ -246,7 +280,54 @@ public actor SQLiteContextLedger: ContextLedger {
             ))
         }
         try checkRead(statement, operation: "search artifacts")
+        let now = Date().timeIntervalSince1970
+        for artifact in result {
+            try execute(
+                "UPDATE artifacts SET last_accessed_at = ? WHERE hash = ?",
+                bindings: [.double(now), .text(artifact.hash)]
+            )
+        }
         return result
+    }
+
+    public func deleteConversation(id: String) throws {
+        try execute("DELETE FROM conversations WHERE id = ?", bindings: [.text(id)])
+    }
+
+    public func cacheStats() throws -> ContextCacheStats {
+        let statement = try prepare(
+            "SELECT COUNT(*), COALESCE(SUM(length(CAST(text AS BLOB))), 0), MIN(last_accessed_at), MAX(last_accessed_at) FROM artifacts"
+        )
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            try checkRead(statement, operation: "read cache stats", allowDone: true)
+            return .init(enabled: true, artifactCount: 0, estimatedBytes: 0)
+        }
+        let count = Int(sqlite3_column_int64(statement, 0))
+        return ContextCacheStats(
+            enabled: true,
+            artifactCount: count,
+            estimatedBytes: Int(sqlite3_column_int64(statement, 1)),
+            oldestAccessedAt: count == 0 ? nil : Date(timeIntervalSince1970: sqlite3_column_double(statement, 2)),
+            newestAccessedAt: count == 0 ? nil : Date(timeIntervalSince1970: sqlite3_column_double(statement, 3))
+        )
+    }
+
+    public func pruneArtifacts(olderThan date: Date) throws {
+        try transaction {
+            try execute(
+                "DELETE FROM artifact_fts WHERE hash IN (SELECT hash FROM artifacts WHERE last_accessed_at < ?)",
+                bindings: [.double(date.timeIntervalSince1970)]
+            )
+            try execute("DELETE FROM artifacts WHERE last_accessed_at < ?", bindings: [.double(date.timeIntervalSince1970)])
+        }
+    }
+
+    public func clearArtifactCache() throws {
+        try transaction {
+            try execute("DELETE FROM artifact_fts")
+            try execute("DELETE FROM artifacts")
+        }
     }
 
     public func purgeExpired() throws {

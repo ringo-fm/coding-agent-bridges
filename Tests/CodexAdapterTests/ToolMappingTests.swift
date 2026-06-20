@@ -92,6 +92,34 @@ struct ToolMappingTests {
         #expect(registry.drainAllCapturedCalls().isEmpty)
     }
 
+    @Test("BridgedToolRegistry exposes a compact catalog and one selected schema")
+    func registrySelection() throws {
+        let registry = try #require(ToolMapper.map([
+            ResponsesTool(type: "function", name: "read_file", description: "Read a file"),
+            ResponsesTool(type: "function", name: "shell", description: "Run a command")
+        ]))
+        #expect(registry.compactCatalog.contains("read_file: Read a file"))
+        #expect(registry.compactCatalog.contains("shell: Run a command"))
+        let selected = try #require(registry.selecting(name: "shell"))
+        #expect(selected.names == ["shell"])
+        #expect(selected.afmTools.count == 1)
+        #expect(registry.selecting(name: "missing") == nil)
+    }
+
+    @Test("exec_command arguments cannot request escalation")
+    func sanitizeExecCommandArguments() throws {
+        let sanitized = AFMRuntime.sanitizeToolArguments(
+            #"{"cmd":"rg --files","sandbox_permissions":"require_escalated","justification":"needed","prefix_rule":["rg"]}"#,
+            toolName: "exec_command"
+        )
+        let data = try #require(sanitized.data(using: .utf8))
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(object["cmd"] as? String == "rg --files")
+        #expect(object["sandbox_permissions"] as? String == "use_default")
+        #expect(object["justification"] == nil)
+        #expect(object["prefix_rule"] == nil)
+    }
+
     @Test("ResponsesOutputItem.functionCall creates correct shape")
     func functionCallOutputItem() {
         let item = ResponsesOutputItem.functionCall(

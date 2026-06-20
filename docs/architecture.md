@@ -26,6 +26,11 @@ Maps Anthropic Messages API and Claude Code-specific compatibility behavior to a
 
 `CodexAFMBridge` and `ClaudeAFMBridge` assemble configuration and dependencies. Business logic must remain in library targets.
 
+`RingoCore` composes both adapters into one Hummingbird application. The gateway
+shares a `FoundationModelsBackend`, context ledger, authentication policy, and
+telemetry actor while adapters continue to own their wire formats and tool-call
+strategies.
+
 ## Dependency rules
 
 ```text
@@ -33,6 +38,7 @@ CodexAFMBridge  -> CodexAdapter  --+
                                   +-> AgentBridgeCore
 ClaudeAFMBridge -> ClaudeAdapter -+-> AFMBackend
                                   +-> BridgeHTTP
+RingoCLI -> RingoCore -> CodexAdapter + ClaudeAdapter
 ```
 
 - Adapters do not depend on one another.
@@ -64,3 +70,8 @@ Persistent storage is opt-in. Its default location is
 `~/Library/Application Support/coding-agent-bridges/context.sqlite3`; startup fails
 instead of silently downgrading when an explicitly requested database cannot be
 opened or migrated.
+
+The gateway mounts OpenAI-compatible routes at both `/v1` and `/openai/v1`, and
+Anthropic-compatible routes under `/anthropic/v1`. Protocol-neutral dashboard,
+session, and cache routes are owned by `RingoCore`; they consume only
+`AgentBridgeCore` management models.

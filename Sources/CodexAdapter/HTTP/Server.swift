@@ -1,4 +1,5 @@
 import Foundation
+import AgentBridgeCore
 import BridgeHTTP
 import Hummingbird
 import HummingbirdCore
@@ -65,4 +66,48 @@ public struct BridgeServer: Sendable {
         )
         try await app.runService()
     }
+}
+
+/// Build the default service graph and run a Codex-compatible bridge until cancelled.
+public func runCodexBridge(
+    config: BridgeConfig,
+    profile: CompatibilityProfile = .loadFromEnv()
+) async throws {
+    var logger = Logger(label: "codex-afm-bridge")
+    logger.logLevel = config.logLevel
+    let afm = AFMRuntime()
+    logger.info("Compatibility profile: \(profile.name)")
+    let availability = afm.availability()
+    if availability.isAvailable {
+        logger.info("Apple Foundation Models available (\(SupportedModels.canonical)).")
+    } else if case .unavailable(let reason) = availability {
+        logger.warning("Apple Foundation Models unavailable: \(reason.message)")
+    }
+    let services = BridgeServices(
+        afm: afm,
+        store: ResponseStore(),
+        config: config,
+        profile: profile,
+        logger: logger,
+        contextLedger: try ContextLedgerFactory.make(
+            mode: config.contextMode,
+            path: config.contextPath,
+            retentionDays: config.contextRetentionDays
+        )
+    )
+    try await BridgeServer(services: services).run()
+}
+
+/// Convenience entry point for launchers that do not need adapter-specific configuration.
+public func runCodexBridge(host: String, port: Int, authToken: String) async throws {
+    try await runCodexBridge(
+        config: BridgeConfig(
+            host: host,
+            port: port,
+            authToken: authToken,
+            logLevel: .warning,
+            debug: false
+        ),
+        profile: .codexTools
+    )
 }

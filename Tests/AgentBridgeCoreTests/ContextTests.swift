@@ -152,6 +152,46 @@ final class ContextLedgerTests: XCTestCase {
         XCTAssertEqual(restoredCapsule?.objective, "keep me")
         XCTAssertNil(conversation?.parentConversationID)
     }
+
+    func testManagementOperationsCoverMemoryDisabledAndSQLite() async throws {
+        let memory = InMemoryContextLedger()
+        await memory.saveConversation(.init(id: "one", protocolName: "codex", fingerprint: "f", turnHashes: ["a"]))
+        await memory.append(.init(id: "turn", kind: .currentRequest, text: "hello"), to: "one")
+        await memory.cacheArtifact(hash: "hash", text: "cached text", metadata: [:])
+        let memorySessions = await memory.listConversations(limit: 10)
+        let memoryStats = await memory.cacheStats()
+        XCTAssertEqual(memorySessions.first?.segmentCount, 1)
+        XCTAssertEqual(memoryStats.artifactCount, 1)
+        await memory.clearArtifactCache()
+        let clearedMemoryStats = await memory.cacheStats()
+        XCTAssertEqual(clearedMemoryStats.artifactCount, 0)
+        await memory.deleteConversation(id: "one")
+        let remainingMemorySessions = await memory.listConversations(limit: 10)
+        XCTAssertTrue(remainingMemorySessions.isEmpty)
+
+        let disabled = DisabledContextLedger()
+        let disabledStatus = await disabled.storageStatus()
+        let disabledStats = await disabled.cacheStats()
+        XCTAssertEqual(disabledStatus.mode, .off)
+        XCTAssertFalse(disabledStats.enabled)
+
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let sqlite = try SQLiteContextLedger(path: directory.appendingPathComponent("context.sqlite3").path)
+        try await sqlite.saveConversation(.init(id: "sqlite", protocolName: "claude", fingerprint: "s", turnHashes: []))
+        try await sqlite.append(.init(id: "turn", kind: .currentRequest, text: "content"), to: "sqlite")
+        try await sqlite.cacheArtifact(hash: "hash", text: "artifact", metadata: [:])
+        let sqliteSessions = try await sqlite.listConversations(limit: 10)
+        let sqliteStats = try await sqlite.cacheStats()
+        XCTAssertEqual(sqliteSessions.first?.segmentCount, 1)
+        XCTAssertEqual(sqliteStats.artifactCount, 1)
+        try await sqlite.deleteConversation(id: "sqlite")
+        let remainingSQLiteSegments = try await sqlite.segments(for: "sqlite", limit: 10)
+        XCTAssertTrue(remainingSQLiteSegments.isEmpty)
+        try await sqlite.clearArtifactCache()
+        let clearedSQLiteStats = try await sqlite.cacheStats()
+        XCTAssertEqual(clearedSQLiteStats.artifactCount, 0)
+    }
 }
 
 final class ContextCompactionTests: XCTestCase {
