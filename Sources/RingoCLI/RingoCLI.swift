@@ -41,7 +41,7 @@ struct RingoCLI {
     static func runAgent(_ agent: Agent, _ agentArgs: [String]) throws -> Int32 {
         let host = env("AFM_BRIDGE_HOST") ?? "127.0.0.1"
         let port = env("AFM_BRIDGE_PORT") ?? String(agent.defaultPort)
-        let token = env("AFM_BRIDGE_API_KEY") ?? env("AFM_BRIDGE_TOKEN") ?? "ringo-\(UUID().uuidString)"
+        let token = env("AFM_BRIDGE_API_KEY") ?? "ringo-\(UUID().uuidString)"
         let bridgePath = try resolveBridge(agent)
         let agentPath = try resolveCommand(agent.rawValue)
         let baseURL = "http://\(host):\(port)"
@@ -55,6 +55,12 @@ struct RingoCLI {
         bridge.executableURL = URL(fileURLWithPath: bridgePath)
         bridge.environment = bridgeEnv
         try bridge.run()
+
+        let agentRef = UnsafeMutablePointer<Process?>.allocate(capacity: 1)
+        agentRef.initialize(to: nil)
+        defer { agentRef.deallocate() }
+
+        installSignalHandler(bridge: bridge, agentRef: agentRef)
         defer {
             if bridge.isRunning {
                 bridge.terminate()
@@ -62,7 +68,7 @@ struct RingoCLI {
             }
         }
 
-        if !waitForBridge(baseURL) {
+        if !waitForBridge(baseURL, bridge: bridge) {
             throw CLIError("bridge did not become ready at \(baseURL)", 70)
         }
 
@@ -76,7 +82,26 @@ struct RingoCLI {
             agentEnv["ANTHROPIC_BASE_URL"] = baseURL
         }
 
-        return try runProcess(agentPath, agentArgs, environment: agentEnv)
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: agentPath)
+        child.arguments = agentArgs
+        child.environment = agentEnv
+        agentRef.pointee = child
+        try child.run()
+        child.waitUntilExit()
+        return child.terminationStatus
+    }
+
+    private static func installSignalHandler(bridge: Process, agentRef: UnsafeMutablePointer<Process?>) {
+        _bridgeProcess = bridge
+        _agentProcessRef = agentRef
+        for sig: Int32 in [SIGINT, SIGTERM] {
+            signal(sig) { _ in
+                _agentProcessRef?.pointee?.terminate()
+                if _bridgeProcess?.isRunning == true { _bridgeProcess?.terminate() }
+                Darwin.exit(130)
+            }
+        }
     }
 
     static func doctor() -> Int32 {
@@ -94,7 +119,7 @@ struct RingoCLI {
                 line(false, name, "not found on PATH")
             }
         }
-        if env("AFM_BRIDGE_API_KEY") == nil && env("AFM_BRIDGE_TOKEN") == nil {
+        if env("AFM_BRIDGE_API_KEY") == nil {
             line(true, "bridge token", "will be generated for ringo run")
         } else {
             line(true, "bridge token", "provided by environment")
@@ -118,23 +143,22 @@ struct RingoCLI {
         return process.terminationStatus
     }
 
-    static func waitForBridge(_ baseURL: String) -> Bool {
+    static func waitForBridge(_ baseURL: String, bridge: Process? = nil) -> Bool {
         let deadline = Date().addingTimeInterval(20)
         let curl = findOnPATH("curl") ?? "/usr/bin/curl"
         while Date() < deadline {
-            for path in ["/health", "/v1/models", "/"] {
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: curl)
-                process.arguments = ["--silent", "--show-error", "--fail", "--max-time", "1", baseURL + path]
-                process.standardOutput = Pipe()
-                process.standardError = Pipe()
-                do {
-                    try process.run()
-                    process.waitUntilExit()
-                    if process.terminationStatus == 0 { return true }
-                } catch {
-                    return false
-                }
+            if let bridge, !bridge.isRunning { return false }
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: curl)
+            process.arguments = ["--silent", "--show-error", "--fail", "--max-time", "1", baseURL + "/health"]
+            process.standardOutput = Pipe()
+            process.standardError = Pipe()
+            do {
+                try process.run()
+                process.waitUntilExit()
+                if process.terminationStatus == 0 { return true }
+            } catch {
+                return false
             }
             Thread.sleep(forTimeInterval: 0.25)
         }
@@ -180,12 +204,15 @@ struct RingoCLI {
 
     Environment:
       AFM_BRIDGE_HOST=127.0.0.1
-      AFM_BRIDGE_PORT=8765
+      AFM_BRIDGE_PORT=<default: 8765 for codex, 8766 for claude>
       AFM_BRIDGE_API_KEY=<local-token>
       RINGO_CODEX_BRIDGE=/path/to/codex-afm-bridge
       RINGO_CLAUDE_BRIDGE=/path/to/claude-afm-bridge
     """
 }
+
+private nonisolated(unsafe) var _bridgeProcess: Process?
+private nonisolated(unsafe) var _agentProcessRef: UnsafeMutablePointer<Process?>?
 
 enum Agent: String {
     case codex
