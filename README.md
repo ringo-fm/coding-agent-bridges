@@ -147,6 +147,24 @@ The latest source snapshots are imported without combining Git histories. The or
 - Codex CLI for `ringo codex`
 - Claude Code CLI for `ringo claude`
 
+## Live Codex instruction-following E2E
+
+The opt-in E2E test launches the real Codex CLI through `ringo`, uses Apple
+Foundation Models to inspect a temporary repository, and verifies that Codex
+follows its `AGENTS.md` while producing an exact requested artifact. It is not
+part of `swift test` or the default GitHub Actions workflow because it requires
+macOS 26, available AFM assets, and an installed Codex CLI.
+
+```bash
+CODEX_BIN=/Applications/Codex.app/Contents/Resources/codex \
+  Tests/E2E/codex-instruction-following.sh
+```
+
+`CODEX_BIN` defaults to `codex` on `PATH`. The script rejects a CLI that cannot
+run `--version`, enforces a 180-second timeout (override with
+`E2E_TIMEOUT_SECONDS`), and preserves its temporary workspace with the Codex
+log and Git diff when the test fails.
+
 ## Status
 
 The standalone Codex and Claude implementations and their unit/contract tests have been migrated. Shared runtime, context planning, structured compaction, persistent retrieval, session reuse, staged Claude tool-schema ingestion, and the end-to-end `ringo` launcher are implemented.

@@ -154,6 +154,28 @@ struct ToolMappingTests {
         #expect(normalized.toolOutputs.first?.output == "# README\nHello world")
     }
 
+    @Test("next tool turn preserves instructions and tool output")
+    func nextToolTurnPreservesInstructionsAndToolOutput() {
+        let request = ResponsesCreateRequest(
+            model: "apple-foundation-local",
+            instructions: "Only create output/report.md.",
+            input: .items([
+                .user(text: "Complete TASK.md"),
+                ResponsesInputItem(
+                    type: "function_call_output",
+                    call_id: "call_1",
+                    arguments: "active IDs are 3 and 11"
+                )
+            ]),
+            tools: [ResponsesTool(type: "function", name: "exec_command", description: "Run a command")]
+        )
+        let normalized = InputNormalizer.normalize(request, flags: .codexTools)
+        let prompt = PromptBuilder.build(from: normalized)
+        #expect(normalized.instructions == "Only create output/report.md.")
+        #expect(prompt.contains("System instructions:\nOnly create output/report.md."))
+        #expect(prompt.contains("[tool_output call_1] active IDs are 3 and 11"))
+    }
+
     @Test("InputNormalizer ignores function_call items when function-call disabled")
     func normalizeFunctionCallDisabled() {
         let request = ResponsesCreateRequest(
@@ -265,4 +287,3 @@ struct ToolMappingTests {
         #expect(response.output[1].arguments == "{\"path\":\"README.md\"}")
     }
 }
-
