@@ -364,38 +364,118 @@ public enum RingoRuntime {
     }
 
     public static func runChild(_ invocation: ChildInvocation) async throws -> Int32 {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: invocation.executable)
-        process.arguments = invocation.arguments
-        process.environment = invocation.environment
-        process.standardInput = FileHandle.standardInput
-        process.standardOutput = FileHandle.standardOutput
-        process.standardError = FileHandle.standardError
+        var masterFD: Int32 = -1
+        var ws = winsize()
+        if isatty(STDIN_FILENO) != 0 {
+            _ = ioctl(STDIN_FILENO, TIOCGWINSZ, &ws)
+        } else {
+            ws.ws_col = 80
+            ws.ws_row = 24
+        }
+
+        let pid = forkpty(&masterFD, nil, nil, &ws)
+        guard pid >= 0 else {
+            throw RingoError.bridgeFailed("forkpty failed: \(String(cString: strerror(errno)))")
+        }
+
+        if pid == 0 {
+            // Child: inherit environment then override with bridge values
+            for (key, value) in invocation.environment {
+                setenv(key, value, 1)
+            }
+            let argv = ([invocation.executable] + invocation.arguments).map { strdup($0) } + [nil]
+            execv(invocation.executable, argv)
+            _exit(127)
+        }
+
+        // Parent: save/restore terminal, set up signal forwarding, relay I/O via poll loop
+        var originalTermios = termios()
+        let stdinIsTTY = isatty(STDIN_FILENO) != 0
+        if stdinIsTTY {
+            tcgetattr(STDIN_FILENO, &originalTermios)
+            var raw = originalTermios
+            cfmakeraw(&raw)
+            tcsetattr(STDIN_FILENO, TCSANOW, &raw)
+        }
 
         signal(SIGINT, SIG_IGN)
         signal(SIGTERM, SIG_IGN)
-        let interrupt = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
-        let terminate = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
-        interrupt.setEventHandler { if process.isRunning { kill(process.processIdentifier, SIGINT) } }
-        terminate.setEventHandler { if process.isRunning { kill(process.processIdentifier, SIGTERM) } }
-        interrupt.resume()
-        terminate.resume()
-        defer {
-            interrupt.cancel()
-            terminate.cancel()
-            signal(SIGINT, SIG_DFL)
-            signal(SIGTERM, SIG_DFL)
+        signal(SIGWINCH, SIG_IGN)
+        let sigintSrc = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
+        let sigtermSrc = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
+        let sigwinchSrc = DispatchSource.makeSignalSource(signal: SIGWINCH, queue: .global())
+        sigintSrc.setEventHandler { kill(pid, SIGINT) }
+        sigtermSrc.setEventHandler { kill(pid, SIGTERM) }
+        sigwinchSrc.setEventHandler {
+            var newWS = winsize()
+            if ioctl(STDIN_FILENO, TIOCGWINSZ, &newWS) == 0 {
+                _ = ioctl(masterFD, TIOCSWINSZ, &newWS)
+            }
+        }
+        sigintSrc.resume()
+        sigtermSrc.resume()
+        sigwinchSrc.resume()
+
+        // I/O relay runs on a dedicated thread using poll() to avoid blocking async runtime
+        let relayThread = Thread {
+            var buf = [UInt8](repeating: 0, count: 4096)
+            while true {
+                var fds = [
+                    pollfd(fd: masterFD, events: Int16(POLLIN), revents: 0),
+                    pollfd(fd: STDIN_FILENO, events: Int16(POLLIN), revents: 0),
+                ]
+                let ret = poll(&fds, 2, 50)
+                if ret < 0 {
+                    if errno == EINTR { continue }
+                    break
+                }
+                // masterFD → stdout: drain first, then check for hangup
+                if fds[0].revents & Int16(POLLIN) != 0 {
+                    let n = read(masterFD, &buf, buf.count)
+                    if n > 0 { _ = write(STDOUT_FILENO, &buf, n) }
+                    else if n == 0 || (n < 0 && errno != EINTR && errno != EAGAIN) { break }
+                }
+                if fds[0].revents & (Int16(POLLHUP) | Int16(POLLERR)) != 0 { break }
+                // stdin → masterFD
+                if fds[1].revents & Int16(POLLIN) != 0 {
+                    let n = read(STDIN_FILENO, &buf, buf.count)
+                    if n > 0 { _ = write(masterFD, &buf, n) }
+                    else if n == 0 || (n < 0 && errno != EINTR && errno != EAGAIN) { break }
+                }
+            }
+        }
+        relayThread.start()
+
+        let status: Int32 = await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                var exitStatus: Int32 = 0
+                waitpid(pid, &exitStatus, 0)
+                let wstatus = exitStatus & 0x7f
+                let code: Int32
+                if wstatus == 0 {
+                    code = (exitStatus >> 8) & 0xff
+                } else if wstatus != 0x7f {
+                    code = 128 + wstatus
+                } else {
+                    code = exitStatus
+                }
+                continuation.resume(returning: code)
+            }
         }
 
-        return try await withCheckedThrowingContinuation { continuation in
-            process.terminationHandler = { process in
-                let status = process.terminationReason == .uncaughtSignal
-                    ? 128 + process.terminationStatus
-                    : process.terminationStatus
-                continuation.resume(returning: status)
-            }
-            do { try process.run() } catch { continuation.resume(throwing: error) }
+        close(masterFD)
+        sigintSrc.cancel()
+        sigtermSrc.cancel()
+        sigwinchSrc.cancel()
+        signal(SIGINT, SIG_DFL)
+        signal(SIGTERM, SIG_DFL)
+        signal(SIGWINCH, SIG_DFL)
+
+        if stdinIsTTY {
+            tcsetattr(STDIN_FILENO, TCSANOW, &originalTermios)
         }
+
+        return status
     }
 
     public static func serveInstructions(agent: RingoAgent, host: String, port: Int) -> String {
