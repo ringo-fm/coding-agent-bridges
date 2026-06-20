@@ -1,4 +1,5 @@
 import AFMBackend
+import AgentBridgeCore
 import ClaudeAdapter
 import CodexAdapter
 import Darwin
@@ -27,6 +28,7 @@ public enum RingoAgent: String, CaseIterable, Sendable {
 public enum RingoError: Error, CustomStringConvertible {
     case executableNotFound(String)
     case invalidAgent(String)
+    case invalidContextMode(String)
     case noAvailablePort
     case bridgeFailed(String)
     case bridgeTimedOut(URL)
@@ -35,6 +37,7 @@ public enum RingoError: Error, CustomStringConvertible {
         switch self {
         case .executableNotFound(let name): "Could not find '\(name)' on PATH."
         case .invalidAgent(let name): "Unknown agent '\(name)'; expected 'claude' or 'codex'."
+        case .invalidContextMode(let name): "Unknown context mode '\(name)'; expected 'persistent', 'memory', or 'off'."
         case .noAvailablePort: "Could not allocate an available localhost port."
         case .bridgeFailed(let message): "Bridge failed to start: \(message)"
         case .bridgeTimedOut(let url): "Bridge did not become ready at \(url.absoluteString)."
@@ -56,6 +59,13 @@ public struct ChildInvocation: Equatable, Sendable {
 
 public enum RingoRuntime {
     public static let localToken = "ringo-local"
+    public static let defaultMaxToolSteps = 6
+
+    public static var defaultCodexHome: String {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
+        return base.appendingPathComponent("coding-agent-bridges/codex-home", isDirectory: true).path
+    }
 
     public static func gatewayToken(
         environment: [String: String] = ProcessInfo.processInfo.environment
@@ -77,10 +87,13 @@ public enum RingoRuntime {
         port: Int,
         arguments: [String],
         inheritedEnvironment: [String: String] = ProcessInfo.processInfo.environment,
-        executable: String? = nil
+        executable: String? = nil,
+        inheritCodexConfig: Bool = false,
+        codexHome: String? = nil,
+        workingDirectory: String = FileManager.default.currentDirectoryPath
     ) throws -> ChildInvocation {
         let path = try executable ?? resolveExecutable(agent.rawValue, environment: inheritedEnvironment)
-        let childArguments = arguments.first == "--" ? Array(arguments.dropFirst()) : arguments
+        var childArguments = arguments.first == "--" ? Array(arguments.dropFirst()) : arguments
         var environment = inheritedEnvironment
         let gatewayURL = "http://\(host):\(port)"
         let token = gatewayToken(environment: inheritedEnvironment)
@@ -98,14 +111,37 @@ public enum RingoRuntime {
             environment["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] = "1"
             return ChildInvocation(executable: path, arguments: childArguments, environment: environment)
         case .codex:
+            if childArguments.first == "exec",
+               !childArguments.contains("--skip-git-repo-check"),
+               !isInsideGitRepository(at: workingDirectory) {
+                childArguments.insert("--skip-git-repo-check", at: 1)
+            }
             environment["AFM_BRIDGE_API_KEY"] = token
-            let overrides = codexOverrides(baseURL: gatewayURL + "/openai/v1", model: agent.model)
+            let resolvedCodexHome: String?
+            if !inheritCodexConfig {
+                resolvedCodexHome = codexHome ?? defaultCodexHome
+                environment["CODEX_HOME"] = resolvedCodexHome
+            } else {
+                resolvedCodexHome = nil
+            }
+            let catalogPath = resolvedCodexHome.map {
+                URL(fileURLWithPath: $0, isDirectory: true).appendingPathComponent("models.json").path
+            }
+            let overrides = codexOverrides(
+                baseURL: gatewayURL + "/openai/v1",
+                model: agent.model,
+                modelCatalogPath: catalogPath
+            )
             return ChildInvocation(executable: path, arguments: overrides + childArguments, environment: environment)
         }
     }
 
-    public static func codexOverrides(baseURL: String, model: String) -> [String] {
-        [
+    public static func codexOverrides(
+        baseURL: String,
+        model: String,
+        modelCatalogPath: String? = nil
+    ) -> [String] {
+        var overrides = [
             "-c", "model=\"\(model)\"",
             "-c", "model_provider=\"ringo\"",
             "-c", "model_providers.ringo.name=\"Apple Foundation Models Local\"",
@@ -116,7 +152,131 @@ public enum RingoRuntime {
             "-c", "model_providers.ringo.stream_max_retries=0",
             "-c", "model_reasoning_summary=\"none\"",
             "-c", "model_supports_reasoning_summaries=false",
+            "-c", "personality=\"none\"",
+            "-c", "features.personality=false",
+            "-c", "web_search=\"disabled\"",
+            "-c", "model_context_window=4096",
+            "-c", "model_auto_compact_token_limit=3072",
+            "-c", "tool_output_token_limit=1024",
         ]
+        if let modelCatalogPath {
+            overrides += ["-c", "model_catalog_json=\"\(modelCatalogPath)\""]
+        }
+        return overrides
+    }
+
+    public static func prepareCodexHome(at path: String = defaultCodexHome) throws {
+        let directory = URL(fileURLWithPath: path, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(ModelsList.default).write(
+            to: directory.appendingPathComponent("models.json"),
+            options: .atomic
+        )
+    }
+
+    public static func isInsideGitRepository(at path: String) -> Bool {
+        var directory = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+        let root = URL(fileURLWithPath: "/", isDirectory: true)
+        while true {
+            if FileManager.default.fileExists(atPath: directory.appendingPathComponent(".git").path) {
+                return true
+            }
+            if directory == root { return false }
+            let parent = directory.deletingLastPathComponent()
+            if parent == directory { return false }
+            directory = parent
+        }
+    }
+
+    public static func gatewayConfiguration(
+        host: String,
+        port: Int,
+        contextMode: String,
+        verbose: Bool = false,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) throws -> GatewayConfiguration {
+        guard let mode = ContextStorageMode(rawValue: contextMode) else {
+            throw RingoError.invalidContextMode(contextMode)
+        }
+        return GatewayConfiguration(
+            host: host,
+            port: port,
+            authToken: gatewayToken(environment: environment),
+            contextMode: mode,
+            contextPath: environment["AFM_BRIDGE_CONTEXT_PATH"],
+            retentionDays: Int(environment["AFM_BRIDGE_CONTEXT_RETENTION_DAYS"] ?? "30") ?? 30,
+            verbose: verbose
+        )
+    }
+
+    public static func runCodexExecClean(_ invocation: ChildInvocation) async throws -> Int32 {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: invocation.executable)
+        var arguments = invocation.arguments
+        if let execIndex = arguments.firstIndex(of: "exec"), !arguments.contains("--json") {
+            arguments.insert("--json", at: execIndex + 1)
+        }
+        process.arguments = arguments
+        process.environment = invocation.environment
+        process.standardInput = FileHandle.standardInput
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        signal(SIGINT, SIG_IGN)
+        signal(SIGTERM, SIG_IGN)
+        let interrupt = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+        let terminate = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        interrupt.setEventHandler { if process.isRunning { kill(process.processIdentifier, SIGINT) } }
+        terminate.setEventHandler { if process.isRunning { kill(process.processIdentifier, SIGTERM) } }
+        interrupt.resume()
+        terminate.resume()
+        defer {
+            interrupt.cancel()
+            terminate.cancel()
+            signal(SIGINT, SIG_DFL)
+            signal(SIGTERM, SIG_DFL)
+        }
+
+        try process.run()
+        async let stdoutData = stdoutPipe.fileHandleForReading.readToEnd()
+        async let stderrData = stderrPipe.fileHandleForReading.readToEnd()
+        let status = await withCheckedContinuation { continuation in
+            process.terminationHandler = { process in
+                continuation.resume(returning: process.terminationReason == .uncaughtSignal
+                    ? 128 + process.terminationStatus
+                    : process.terminationStatus)
+            }
+        }
+        let (stdout, stderr) = try await (stdoutData, stderrData)
+        let output = stdout.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        let errorOutput = stderr.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        if let final = finalAgentMessage(from: output), !final.isEmpty {
+            FileHandle.standardOutput.write(Data((final + "\n").utf8))
+        } else if status != 0 {
+            FileHandle.standardError.write(Data((errorOutput.isEmpty ? output : errorOutput).utf8))
+        }
+        return status
+    }
+
+    public static func finalAgentMessage(from jsonLines: String) -> String? {
+        let messages = jsonLines.split(separator: "\n").compactMap { line -> String? in
+            guard let data = String(line).data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  object["type"] as? String == "item.completed",
+                  let item = object["item"] as? [String: Any],
+                  item["type"] as? String == "agent_message" else {
+                return nil
+            }
+            return item["text"] as? String
+        }
+        return messages.last
     }
 
     public static func resolveExecutable(
@@ -183,6 +343,10 @@ public enum RingoRuntime {
 
     public static func runGateway(host: String, port: Int) async throws {
         try await RingoGateway.run(config: .fromEnvironment(host: host, port: port))
+    }
+
+    public static func runGateway(config: GatewayConfiguration) async throws {
+        try await RingoGateway.run(config: config)
     }
 
     public static func waitUntilHealthy(host: String, port: Int, timeout: Duration = .seconds(10)) async throws {

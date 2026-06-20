@@ -116,3 +116,10 @@ public final class BridgedToolRegistry: @unchecked Sendable {
         tools.flatMap { $0.drainCapturedCalls() }
     }
 }
+
+/// Small, text-only tool surface used by the AFM launcher. Image and broad
+/// external tool catalogs are intentionally excluded from the default 4096
+/// token context.
+public let codexAFMCoreToolNames: Set<String> = [
+    "exec_command", "write_stdin", "apply_patch", "request_user_input"
+]

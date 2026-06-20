@@ -19,8 +19,22 @@ struct Ringo: AsyncParsableCommand {
 
     struct Codex: AsyncParsableCommand {
         static let configuration = CommandConfiguration(abstract: "Launch Codex through the local bridge.")
+        @Flag(help: "Use the normal Codex home and user configuration instead of the AFM-specific home.")
+        var inheritUserConfig = false
+        @Option(help: "Bridge context storage: persistent, memory, or off.")
+        var contextMode = "persistent"
+        @Flag(help: "Show Codex JSON-independent diagnostics and gateway logs.")
+        var verbose = false
         @Argument(parsing: .captureForPassthrough) var arguments: [String] = []
-        func run() async throws { try await launch(.codex, arguments: arguments) }
+        func run() async throws {
+            try await launch(
+                .codex,
+                arguments: arguments,
+                inheritCodexConfig: inheritUserConfig,
+                contextMode: contextMode,
+                verbose: verbose
+            )
+        }
     }
 
     struct Run: AsyncParsableCommand {
@@ -122,21 +136,49 @@ struct Ringo: AsyncParsableCommand {
     }
 }
 
-private func launch(_ agent: RingoAgent, arguments: [String]) async throws {
+private func launch(
+    _ agent: RingoAgent,
+    arguments: [String],
+    inheritCodexConfig: Bool = false,
+    contextMode: String? = nil,
+    verbose: Bool = false
+) async throws {
     let port = try RingoRuntime.availablePort()
+    if agent == .codex && !inheritCodexConfig {
+        try RingoRuntime.prepareCodexHome()
+    }
     let invocation = try RingoRuntime.invocation(
-        for: agent, host: "127.0.0.1", port: port, arguments: arguments
+        for: agent,
+        host: "127.0.0.1",
+        port: port,
+        arguments: arguments,
+        inheritCodexConfig: inheritCodexConfig
     )
-    let server = Task { try await RingoRuntime.runGateway(host: "127.0.0.1", port: port) }
+    let config = try RingoRuntime.gatewayConfiguration(
+        host: "127.0.0.1",
+        port: port,
+        contextMode: contextMode ?? "memory",
+        verbose: verbose
+    )
+    let server = Task { try await RingoRuntime.runGateway(config: config) }
+    let status: Int32
     do {
         try await RingoRuntime.waitUntilHealthy(host: "127.0.0.1", port: port)
-        let status = try await RingoRuntime.runChild(invocation)
-        server.cancel()
-        if status != 0 { throw ExitCode(status) }
+        let isCleanExec = agent == .codex
+            && arguments.contains("exec")
+            && !arguments.contains("--json")
+            && !verbose
+        status = try await (isCleanExec
+            ? RingoRuntime.runCodexExecClean(invocation)
+            : RingoRuntime.runChild(invocation))
     } catch {
         server.cancel()
+        _ = await server.result
         throw error
     }
+    server.cancel()
+    _ = await server.result
+    if status != 0 { throw ExitCode(status) }
 }
 
 private func client(_ url: String) throws -> RingoAdminClient {

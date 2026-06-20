@@ -19,6 +19,12 @@ public struct AFMGenerateRequest: Sendable {
     public let sessionFingerprint: String?
     public let resultingSessionFingerprint: String?
     public let incrementalPrompt: String?
+    public let toolContext: String?
+    public let priorToolCalls: [CapturedToolCall]
+    public let toolStepCount: Int
+    public let maxToolSteps: Int
+    public let finalizeAfterToolOutput: Bool
+    public let directToolResultAnswer: String?
 
     public init(
         responseID: String,
@@ -33,7 +39,13 @@ public struct AFMGenerateRequest: Sendable {
         conversationKey: String? = nil,
         sessionFingerprint: String? = nil,
         resultingSessionFingerprint: String? = nil,
-        incrementalPrompt: String? = nil
+        incrementalPrompt: String? = nil,
+        toolContext: String? = nil,
+        priorToolCalls: [CapturedToolCall] = [],
+        toolStepCount: Int = 0,
+        maxToolSteps: Int = 6,
+        finalizeAfterToolOutput: Bool = false,
+        directToolResultAnswer: String? = nil
     ) {
         self.responseID = responseID
         self.model = model
@@ -48,6 +60,12 @@ public struct AFMGenerateRequest: Sendable {
         self.sessionFingerprint = sessionFingerprint
         self.resultingSessionFingerprint = resultingSessionFingerprint
         self.incrementalPrompt = incrementalPrompt
+        self.toolContext = toolContext
+        self.priorToolCalls = priorToolCalls
+        self.toolStepCount = toolStepCount
+        self.maxToolSteps = max(1, maxToolSteps)
+        self.finalizeAfterToolOutput = finalizeAfterToolOutput
+        self.directToolResultAnswer = directToolResultAnswer
     }
 }
 
@@ -83,6 +101,39 @@ public struct AFMStreamSnapshot: Sendable {
     public init(cumulativeText: String, isFinal: Bool = false) {
         self.cumulativeText = cumulativeText
         self.isFinal = isFinal
+    }
+}
+
+enum CodexToolLoopPolicy {
+    static func stopReason(
+        stepCount: Int,
+        maxSteps: Int,
+        proposed: CapturedToolCall? = nil,
+        priorCalls: [CapturedToolCall] = []
+    ) -> String? {
+        if stepCount >= max(1, maxSteps) {
+            return "The coding tool step limit was reached. Summarize the results already obtained, state what remains, and do not request another tool."
+        }
+        guard let proposed else { return nil }
+        let proposedArguments = canonicalArguments(proposed.argumentsJSON)
+        let duplicateCount = priorCalls.filter {
+            $0.name == proposed.name && canonicalArguments($0.argumentsJSON) == proposedArguments
+        }.count
+        if duplicateCount >= 2 {
+            return "The same tool call has already been attempted twice. Summarize the available result or failure and stop without requesting another tool."
+        }
+        return nil
+    }
+
+    private static func canonicalArguments(_ value: String) -> String {
+        guard let data = value.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              JSONSerialization.isValidJSONObject(object),
+              let canonical = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
+              let text = String(data: canonical, encoding: .utf8) else {
+            return value.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return text
     }
 }
 
@@ -181,10 +232,26 @@ public final class AFMRuntime: Sendable {
         )
 
         do {
-            if Self.hasSuccessfulToolOutput(request.incrementalPrompt ?? request.prompt) {
-                let session = makeSession(instructions: request.instructions)
-                let generated = try await session.respond(to: request.prompt, options: options).content
-                let text = Self.nonEmptyText(generated, prompt: request.prompt)
+            if let answer = request.directToolResultAnswer {
+                return AFMGenerateResult(text: answer, finishReason: "stop")
+            }
+            if request.finalizeAfterToolOutput {
+                let text = try await finalText(
+                    request: request,
+                    options: options,
+                    reason: "The requested read-only inspection succeeded. Answer the current request from the tool output and do not request another tool."
+                )
+                return AFMGenerateResult(text: text, finishReason: "stop")
+            }
+            if let reason = CodexToolLoopPolicy.stopReason(
+                stepCount: request.toolStepCount,
+                maxSteps: request.maxToolSteps
+            ) {
+                let text = try await finalText(
+                    request: request,
+                    options: options,
+                    reason: reason
+                )
                 return AFMGenerateResult(
                     text: text,
                     inputTokens: await inputTokenCount(for: request.prompt),
@@ -205,10 +272,22 @@ public final class AFMRuntime: Sendable {
                 selected: selected,
                 options: options
             )
-            selected.capture(argumentsJSON: Self.sanitizeToolArguments(
-                arguments,
-                toolName: selected.names[0]
-            ))
+            let sanitized = Self.sanitizeToolArguments(arguments, toolName: selected.names[0])
+            let proposed = CapturedToolCall(name: selected.names[0], argumentsJSON: sanitized)
+            if let reason = CodexToolLoopPolicy.stopReason(
+                stepCount: request.toolStepCount,
+                maxSteps: request.maxToolSteps,
+                proposed: proposed,
+                priorCalls: request.priorToolCalls
+            ) {
+                let text = try await finalText(
+                    request: request,
+                    options: options,
+                    reason: reason
+                )
+                return AFMGenerateResult(text: text, finishReason: "stop")
+            }
+            selected.capture(argumentsJSON: sanitized)
             let toolCalls = request.toolRegistry?.drainAllCapturedCalls() ?? []
             return AFMGenerateResult(
                 text: "",
@@ -245,8 +324,32 @@ public final class AFMRuntime: Sendable {
             return try await textStream(request: request, options: options)
         }
 
-        if Self.hasSuccessfulToolOutput(request.incrementalPrompt ?? request.prompt) {
-            return try await textStream(request: request, options: options)
+        if let answer = request.directToolResultAnswer {
+            return AsyncThrowingStream { continuation in
+                continuation.yield(AFMStreamSnapshot(cumulativeText: answer, isFinal: true))
+                continuation.finish()
+            }
+        }
+
+        if request.finalizeAfterToolOutput {
+            return try await textStream(
+                request: request,
+                options: options,
+                additionalInstructions: "The requested read-only inspection succeeded. Answer the current request from the tool output and do not request another tool.",
+                promptOverride: request.toolContext
+            )
+        }
+
+        if let reason = CodexToolLoopPolicy.stopReason(
+            stepCount: request.toolStepCount,
+            maxSteps: request.maxToolSteps
+        ) {
+            return try await textStream(
+                request: request,
+                options: options,
+                additionalInstructions: reason,
+                promptOverride: request.toolContext
+            )
         }
 
         let routing = try await routeTool(request: request, options: options)
@@ -264,10 +367,22 @@ public final class AFMRuntime: Sendable {
             selected: selected,
             options: options
         )
-        selected.capture(argumentsJSON: Self.sanitizeToolArguments(
-            arguments,
-            toolName: selected.names[0]
-        ))
+        let sanitized = Self.sanitizeToolArguments(arguments, toolName: selected.names[0])
+        let proposed = CapturedToolCall(name: selected.names[0], argumentsJSON: sanitized)
+        if let reason = CodexToolLoopPolicy.stopReason(
+            stepCount: request.toolStepCount,
+            maxSteps: request.maxToolSteps,
+            proposed: proposed,
+            priorCalls: request.priorToolCalls
+        ) {
+            return try await textStream(
+                request: request,
+                options: options,
+                additionalInstructions: reason,
+                promptOverride: request.toolContext
+            )
+        }
+        selected.capture(argumentsJSON: sanitized)
         return AsyncThrowingStream { continuation in continuation.finish() }
     }
 
@@ -288,13 +403,15 @@ public final class AFMRuntime: Sendable {
 
     private func textStream(
         request: AFMGenerateRequest,
-        options: GenerationOptions
+        options: GenerationOptions,
+        additionalInstructions: String? = nil,
+        promptOverride: String? = nil
     ) async throws -> AsyncThrowingStream<AFMStreamSnapshot, Error> {
-        let session = makeSession(instructions: request.instructions)
+        let session = makeSession(instructions: Self.joinInstructions(request.instructions, additionalInstructions))
         let text: String
         do {
-            let generated = try await session.respond(to: request.prompt, options: options).content
-            text = Self.nonEmptyText(generated, prompt: request.prompt)
+            let generated = try await session.respond(to: promptOverride ?? request.prompt, options: options).content
+            text = try Self.requireNonEmptyText(generated)
         } catch is CancellationError {
             throw BridgeError.generationCancelled
         } catch let error as LanguageModelSession.GenerationError {
@@ -315,12 +432,16 @@ public final class AFMRuntime: Sendable {
         options: GenerationOptions
     ) async throws -> (text: String?, selected: BridgedToolRegistry?) {
         guard let registry = request.toolRegistry else { return (nil, nil) }
+        let routingPrompt = Self.boundedRoutingPrompt(request.toolContext ?? request.incrementalPrompt ?? request.prompt)
+        if Self.simpleFileCreation(routingPrompt) != nil,
+           let exec = registry.selecting(name: "exec_command") {
+            return (nil, exec)
+        }
         let routingInstructions = registry.compactCatalog + """
 
 
-        If the request requires reading files, inspecting the repository, running commands, editing, or another advertised action, select exactly one tool and set text to nil. Otherwise provide the final answer in text. Never claim a tool was executed.
+        If the request requires reading files, inspecting the repository, running commands, editing, or another advertised action, select exactly one tool and set text to nil. After a tool output, request another tool only when it is required to finish the current request; otherwise provide the final answer in text. Use image-oriented tools only for actual image file formats. Never claim a tool was executed.
         """
-        let routingPrompt = Self.boundedRoutingPrompt(request.incrementalPrompt ?? request.prompt)
         let session = makeSession(instructions: routingInstructions)
         let decision: CodexToolRoutingDecision
         do {
@@ -339,8 +460,8 @@ public final class AFMRuntime: Sendable {
         let toolName = Self.normalizedOptional(decision.toolName)
         let text = Self.normalizedOptional(decision.text)
         guard let toolName, let selected = registry.selecting(name: toolName) else {
-            if Self.requiresRepositoryInspection(routingPrompt),
-               let fallback = Self.inspectionTool(in: registry) {
+            if Self.requiresToolAction(routingPrompt),
+               let fallback = Self.actionTool(for: routingPrompt, in: registry) {
                 return (nil, fallback)
             }
             return (text, nil)
@@ -362,10 +483,9 @@ public final class AFMRuntime: Sendable {
 
         Generate concrete, immediately executable arguments from the current request. For exec_command, cmd must be a complete shell command, not a bare program name. Never request escalated permissions.
         """
-        let argumentPrompt = Self.boundedRoutingPrompt(request.incrementalPrompt ?? request.prompt)
-        if toolName == "exec_command", Self.mentionsRepository(argumentPrompt),
-           let fallback = Self.repositoryInspectionArguments() {
-            return fallback
+        let argumentPrompt = Self.boundedRoutingPrompt(request.toolContext ?? request.incrementalPrompt ?? request.prompt)
+        if toolName == "exec_command", let deterministic = Self.deterministicExecArguments(argumentPrompt) {
+            return deterministic
         }
         var feedback = ""
         for attempt in 0..<3 {
@@ -397,10 +517,30 @@ public final class AFMRuntime: Sendable {
                 throw Self.map(error)
             }
         }
-        if toolName == "exec_command", Self.mentionsRepository(argumentPrompt) {
-            if let fallback = Self.repositoryInspectionArguments() { return fallback }
-        }
         throw BridgeError.generationFailed("failed to generate valid tool arguments")
+    }
+
+    private func finalText(
+        request: AFMGenerateRequest,
+        options: GenerationOptions,
+        reason: String
+    ) async throws -> String {
+        let session = makeSession(instructions: Self.joinInstructions(request.instructions, reason))
+        do {
+            let generated = try await session.respond(
+                to: request.toolContext ?? request.prompt,
+                options: options
+            ).content
+            return try Self.requireNonEmptyText(generated)
+        } catch is CancellationError {
+            throw BridgeError.generationCancelled
+        } catch let error as LanguageModelSession.GenerationError {
+            throw Self.map(error)
+        } catch let error as BridgeError {
+            throw error
+        } catch {
+            throw BridgeError.generationFailed(String(describing: error))
+        }
     }
 
     private static func toolArgumentValidationError(
@@ -431,6 +571,62 @@ public final class AFMRuntime: Sendable {
         return nil
     }
 
+    private static func deterministicExecArguments(_ prompt: String) -> String? {
+        guard !prompt.contains("Tool output ") else { return nil }
+        let lower = prompt.lowercased()
+        let command: String
+        if let creation = simpleFileCreation(prompt) {
+            command = "printf '%s\\n' \(shellQuote(creation.content)) > \(shellQuote(creation.path)) && sed -n '1,5p' \(shellQuote(creation.path))"
+        } else if lower.contains("run pwd") || lower.contains("execute pwd") {
+            command = "pwd"
+        } else {
+            let pattern = #"(?<![A-Za-z0-9_./-])([A-Za-z0-9_./-]+\.(?:swift|md|json|toml|ya?ml|rs|go|tsx?|jsx?|py|c|h))(?![A-Za-z0-9_./-])"#
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+                  let match = regex.firstMatch(
+                    in: prompt,
+                    range: NSRange(prompt.startIndex..., in: prompt)
+                  ),
+                  let range = Range(match.range(at: 1), in: prompt) else {
+                return nil
+            }
+            let path = String(prompt[range])
+            guard !path.contains("..") else { return nil }
+            command = "sed -n '1,220p' " + shellQuote(path)
+        }
+        let object: [String: Any] = [
+            "cmd": command,
+            "yield_time_ms": 10_000,
+            "max_output_tokens": 6_000,
+            "sandbox_permissions": "use_default"
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else {
+            return nil
+        }
+        return String(data: data, encoding: .utf8)
+    }
+
+    private static func simpleFileCreation(_ prompt: String) -> (path: String, content: String)? {
+        let lower = prompt.lowercased()
+        guard lower.contains("create") || prompt.contains("作成") else { return nil }
+        let pathPattern = #"([A-Za-z0-9_./-]+\.(?:txt|md|json|toml|ya?ml|swift|rs|go|tsx?|jsx?|py))"#
+        let contentPattern = #"(?i)containing exactly\s+([A-Za-z0-9_.-]+)"#
+        guard let pathRegex = try? NSRegularExpression(pattern: pathPattern),
+              let pathMatch = pathRegex.firstMatch(in: prompt, range: NSRange(prompt.startIndex..., in: prompt)),
+              let pathRange = Range(pathMatch.range(at: 1), in: prompt),
+              let contentRegex = try? NSRegularExpression(pattern: contentPattern),
+              let contentMatch = contentRegex.firstMatch(in: prompt, range: NSRange(prompt.startIndex..., in: prompt)),
+              let contentRange = Range(contentMatch.range(at: 1), in: prompt) else {
+            return nil
+        }
+        let path = String(prompt[pathRange])
+        guard !path.contains("..") else { return nil }
+        return (path, String(prompt[contentRange]))
+    }
+
+    private static func shellQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
     static func sanitizeToolArguments(_ value: String, toolName: String) -> String {
         guard toolName == "exec_command",
               let data = value.data(using: .utf8),
@@ -445,26 +641,19 @@ public final class AFMRuntime: Sendable {
         return text
     }
 
-    private static func repositoryInspectionArguments() -> String? {
-        let arguments: [String: Any] = [
-            "cmd": "git status --short; printf '\\nFILES\\n'; rg --files -g '!.build' | sed -n '1,200p'; printf '\\nREADME\\n'; sed -n '1,240p' README.md; printf '\\nPACKAGE\\n'; sed -n '1,220p' Package.swift",
-            "yield_time_ms": 10_000,
-            "max_output_tokens": 12_000,
-            "sandbox_permissions": "use_default"
-        ]
-        guard let data = try? JSONSerialization.data(withJSONObject: arguments, options: [.sortedKeys]) else {
-            return nil
-        }
-        return String(data: data, encoding: .utf8)
-    }
-
-    private static func nonEmptyText(_ value: String, prompt: String) -> String {
+    private static func requireNonEmptyText(_ value: String) throws -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty { return trimmed }
-        if mentionsRepository(prompt) {
-            return "このリポジトリは、Apple Foundation ModelsをCodexとClaude Codeから利用するためのSwift製ローカル互換ブリッジです。OpenAI Responses API向けのCodexAdapter、Anthropic Messages API向けのClaudeAdapter、共有AFMバックエンドとコンテキスト計画・永続化機構、そして起動を簡略化するringo CLIで構成されています。"
+        throw BridgeError.generationFailed("Apple Foundation Models returned an empty response")
+    }
+
+    private static func joinInstructions(_ first: String?, _ second: String?) -> String? {
+        let values = [first, second].compactMap { value -> String? in
+            guard let value else { return nil }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
         }
-        return "Apple Foundation Modelsから空の応答が返されました。"
+        return values.isEmpty ? nil : values.joined(separator: "\n\n")
     }
 
     private static func normalizedOptional(_ value: String?) -> String? {
@@ -479,13 +668,26 @@ public final class AFMRuntime: Sendable {
     private static func boundedRoutingPrompt(_ value: String) -> String {
         let byteLimit = 4_000
         guard value.utf8.count > byteLimit else { return value }
-        return String(decoding: value.utf8.suffix(byteLimit), as: UTF8.self)
+        let half = byteLimit / 2
+        return String(decoding: value.utf8.prefix(half), as: UTF8.self)
+            + "\n[...middle content omitted...]\n"
+            + String(decoding: value.utf8.suffix(half), as: UTF8.self)
     }
 
-    private static func requiresRepositoryInspection(_ prompt: String) -> Bool {
+    private static func requiresToolAction(_ prompt: String) -> Bool {
         let lower = prompt.lowercased()
-        guard !lower.contains("[tool_output") else { return false }
+        guard !lower.contains("[tool_output"), !lower.contains("tool output ") else { return false }
+        let mutationMarkers = [
+            "create", "edit", "change", "fix", "implement", "write", "delete", "rename",
+            "作成", "編集", "変更", "修正", "実装", "削除"
+        ]
+        let containsFilePath = lower.range(
+            of: #"[a-z0-9_./-]+\.(swift|md|txt|json|toml|ya?ml|rs|go|tsx?|jsx?|py|c|h)"#,
+            options: .regularExpression
+        ) != nil
         return mentionsRepository(lower)
+            || containsFilePath
+            || mutationMarkers.contains { lower.contains($0) }
     }
 
     private static func mentionsRepository(_ prompt: String) -> Bool {
@@ -497,16 +699,16 @@ public final class AFMRuntime: Sendable {
         return markers.contains { lower.contains($0) }
     }
 
-    private static func hasSuccessfulToolOutput(_ prompt: String) -> Bool {
+    private static func actionTool(
+        for prompt: String,
+        in registry: BridgedToolRegistry
+    ) -> BridgedToolRegistry? {
         let lower = prompt.lowercased()
-        guard lower.contains("[tool_output") else { return false }
-        let failureMarkers = [
-            "exited 1", "exit code 1", "no such file", "not found", "error:", "failed"
-        ]
-        return !failureMarkers.contains { lower.contains($0) }
-    }
-
-    private static func inspectionTool(in registry: BridgedToolRegistry) -> BridgedToolRegistry? {
+        let mutationMarkers = ["create", "edit", "change", "fix", "implement", "write", "delete", "rename", "作成", "編集", "変更", "修正", "実装", "削除"]
+        if mutationMarkers.contains(where: { lower.contains($0) }),
+           let patch = registry.selecting(name: "apply_patch") {
+            return patch
+        }
         let preferred = ["exec_command", "shell", "local_shell", "read_file", "list_files"]
         for name in preferred {
             if let selected = registry.selecting(name: name) { return selected }

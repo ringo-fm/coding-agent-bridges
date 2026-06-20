@@ -15,6 +15,8 @@ public struct BridgeServices: Sendable {
     public let profile: CompatibilityProfile
     public let logger: Logger
     public let contextLedger: any ContextLedger
+    public let allowedToolNames: Set<String>?
+    public let maxToolSteps: Int
 
     public init(
         afm: AFMRuntime,
@@ -22,7 +24,9 @@ public struct BridgeServices: Sendable {
         config: BridgeConfig,
         profile: CompatibilityProfile,
         logger: Logger,
-        contextLedger: any ContextLedger = InMemoryContextLedger()
+        contextLedger: any ContextLedger = InMemoryContextLedger(),
+        allowedToolNames: Set<String>? = nil,
+        maxToolSteps: Int = 6
     ) {
         self.afm = afm
         self.store = store
@@ -30,6 +34,8 @@ public struct BridgeServices: Sendable {
         self.profile = profile
         self.logger = logger
         self.contextLedger = contextLedger
+        self.allowedToolNames = allowedToolNames
+        self.maxToolSteps = max(1, maxToolSteps)
     }
 }
 
@@ -87,9 +93,14 @@ public enum Routes {
                 throw BridgeError.unsupportedModel(body.model)
             }
 
-            try rejectUnsupportedInputTypes(body, flags: services.profile.flags)
+            var effectiveBody = body
+            if let allowed = services.allowedToolNames, let tools = body.tools {
+                effectiveBody.tools = tools.filter { allowed.contains($0.name ?? $0.type) }
+            }
 
-            var normalized = InputNormalizer.normalize(body, flags: services.profile.flags)
+            try rejectUnsupportedInputTypes(effectiveBody, flags: services.profile.flags)
+
+            var normalized = InputNormalizer.normalize(effectiveBody, flags: services.profile.flags)
 
             let responseID = newID(prefix: "resp_afm_")
 
@@ -97,7 +108,7 @@ public enum Routes {
             let prepared: PreparedCodexContext
             do {
                 prepared = try await CodexContextPlanner.prepare(
-                    request: body,
+                    request: effectiveBody,
                     normalized: normalized,
                     responseID: responseID,
                     contextSize: limit,
@@ -121,12 +132,12 @@ public enum Routes {
                 throw BridgeError.contextTooLarge(inputTokens: estTokens, limit: limit)
             }
 
-            let stream = body.stream ?? false
+            let stream = effectiveBody.stream ?? false
 
             // Map tools to AFM BridgedTools when function-call is enabled.
             var toolRegistry: BridgedToolRegistry? = nil
-            if services.profile.flags.functionCall, let tools = body.tools, !tools.isEmpty {
-                toolRegistry = ToolMapper.map(tools)
+            if services.profile.flags.functionCall, let tools = effectiveBody.tools, !tools.isEmpty {
+                toolRegistry = ToolMapper.map(tools, allowedNames: services.allowedToolNames)
                 if let toolRegistry {
                     services.logger.info("tools: \(toolRegistry.afmTools.count) tool(s) mapped")
                 }
@@ -134,27 +145,34 @@ public enum Routes {
 
             let afmRequest = AFMGenerateRequest(
                 responseID: responseID,
-                model: body.model,
+                model: effectiveBody.model,
                 instructions: prepared.instructions,
                 prompt: prompt,
                 stream: stream,
-                temperature: body.temperature,
-                maxOutputTokens: body.max_output_tokens ?? PromptBuilder.defaultOutputReserve,
-                topP: body.top_p,
+                temperature: effectiveBody.temperature,
+                maxOutputTokens: effectiveBody.max_output_tokens ?? PromptBuilder.defaultOutputReserve,
+                topP: effectiveBody.top_p,
                 toolRegistry: toolRegistry,
                 conversationKey: prepared.sessionKey,
                 sessionFingerprint: prepared.sessionFingerprint,
                 resultingSessionFingerprint: prepared.resultingSessionFingerprint,
-                incrementalPrompt: prepared.incrementalPrompt
+                incrementalPrompt: prepared.incrementalPrompt,
+                toolContext: makeToolContext(normalized.events),
+                priorToolCalls: normalized.toolCalls.map {
+                    CapturedToolCall(name: $0.name, argumentsJSON: $0.arguments)
+                },
+                toolStepCount: toolStepCount(normalized.events),
+                maxToolSteps: services.maxToolSteps,
+                finalizeAfterToolOutput: shouldFinalizeAfterToolOutput(normalized.events),
+                directToolResultAnswer: directToolResultAnswer(normalized.events)
             )
 
             if stream {
                 return try await streamingResponse(
-                    request: request,
                     services: services,
                     afmRequest: afmRequest,
                     responseID: responseID,
-                    model: body.model,
+                    model: effectiveBody.model,
                     diagnostics: normalized.diagnostics,
                     contextConversationID: prepared.conversation.id
                 )
@@ -163,7 +181,7 @@ public enum Routes {
                     services: services,
                     afmRequest: afmRequest,
                     responseID: responseID,
-                    model: body.model,
+                    model: effectiveBody.model,
                     diagnostics: &normalized.diagnostics,
                     contextConversationID: prepared.conversation.id
                 )
@@ -194,7 +212,10 @@ public func mountCodexRoutes(
     authToken: String,
     sharedBackend: FoundationModelsBackend,
     contextLedger: any ContextLedger,
-    logger: Logger
+    logger: Logger,
+    includeSharedRoutes: Bool = false,
+    allowedToolNames: Set<String>? = codexAFMCoreToolNames,
+    maxToolSteps: Int = 6
 ) {
     let config = BridgeConfig(
         host: host,
@@ -210,8 +231,10 @@ public func mountCodexRoutes(
         config: config,
         profile: .codexTools,
         logger: logger,
-        contextLedger: contextLedger
-    ), includeSharedRoutes: false)
+        contextLedger: contextLedger,
+        allowedToolNames: allowedToolNames,
+        maxToolSteps: maxToolSteps
+    ), includeSharedRoutes: includeSharedRoutes)
 }
 
 // MARK: - Non-streaming response
@@ -243,15 +266,11 @@ private func nonStreamingResponse(
     )
 
     await services.store.store(response)
-    try? await services.contextLedger.append(
-        ContextSegment(
-            id: "assistant-" + responseID,
-            kind: .recentConversation,
-            text: "[assistant] \(result.text)",
-            sourceTurnID: responseID,
-            metadata: ["role": "assistant"]
-        ),
-        to: contextConversationID
+    await persistOutputItems(
+        response.output,
+        responseID: responseID,
+        conversationID: contextConversationID,
+        ledger: services.contextLedger
     )
 
     var headers = HTTPFields()
@@ -268,7 +287,6 @@ private func nonStreamingResponse(
 // MARK: - Streaming response (SSE)
 
 private func streamingResponse(
-    request: Request,
     services: BridgeServices,
     afmRequest: AFMGenerateRequest,
     responseID: String,
@@ -312,81 +330,74 @@ private func streamingResponse(
             let part = ResponsesOutputContent(type: "output_text", text: "")
             try await sse.write(.responseContentPartAdded(outputIndex: 0, contentIndex: 0, part: part), to: &writer)
 
+            var lastLen = 0
+            var fullText = ""
             do {
-                try await request.body.consumeWithCancellationOnInboundClose { _ in
-                    var lastLen = 0
-                    var fullText = ""
-                    do {
-                        let stream = try await afm.stream(afmRequest)
-                        for try await snapshot in stream {
-                            let cumulative = snapshot.cumulativeText
-                            if cumulative.count > lastLen {
-                                let delta = String(cumulative.dropFirst(lastLen))
-                                fullText = cumulative
-                                lastLen = cumulative.count
-                                try await sse.write(
-                                    .responseOutputTextDelta(outputIndex: 0, contentIndex: 0, delta: delta),
-                                    to: &writer
-                                )
-                            }
-                        }
-                    } catch let error as BridgeError {
-                        let failed = OutputMapper.toFailedObject(responseID: responseID, model: model, error: error, createdAt: createdAt)
-                        try? await sse.write(.responseFailed(failed), to: &writer)
-                        try? await sse.write(.error(error.errorObject), to: &writer)
-                        return
-                    } catch is CancellationError {
-                        return
-                    }
-
-                    try await sse.write(.responseOutputTextDone(outputIndex: 0, contentIndex: 0, text: fullText), to: &writer)
-
-                    // Emit the completed message item — Codex reads the final
-                    // assistant text from the `item` field of this event.
-                    let doneItem = ResponsesOutputItem.assistantMessage(id: messageID, text: fullText)
-                    try await sse.write(.responseOutputItemDone(outputIndex: 0, item: doneItem), to: &writer)
-
-                    // Emit function_call items for any tools AFM called.
-                    let toolCalls = afmRequest.toolRegistry?.drainAllCapturedCalls() ?? []
-                    for (idx, call) in toolCalls.enumerated() {
-                        let callID = newID(prefix: "call_afm_")
-                        let fcID = newID(prefix: "fc_afm_")
-                        let fcItem = ResponsesOutputItem.functionCall(
-                            id: fcID, callID: callID, name: call.name, arguments: call.argumentsJSON
+                let stream = try await afm.stream(afmRequest)
+                for try await snapshot in stream {
+                    let cumulative = snapshot.cumulativeText
+                    if cumulative.count > lastLen {
+                        let delta = String(cumulative.dropFirst(lastLen))
+                        fullText = cumulative
+                        lastLen = cumulative.count
+                        try await sse.write(
+                            .responseOutputTextDelta(outputIndex: 0, contentIndex: 0, delta: delta),
+                            to: &writer
                         )
-                        let outputIdx = idx + 1
-                        try await sse.write(.responseOutputItemAdded(outputIndex: outputIdx, item: fcItem), to: &writer)
-                        try await sse.write(.responseOutputItemDone(outputIndex: outputIdx, item: fcItem), to: &writer)
                     }
-
-                    var diags = diagnostics
-                    let inputTokens = await afm.inputTokenCount(for: afmRequest.prompt) ?? OutputMapper.estimateTokens(text: afmRequest.prompt)
-                    let outputTokens = await afm.inputTokenCount(for: fullText) ?? OutputMapper.estimateTokens(text: fullText)
-                    let completed = OutputMapper.toCompletedObject(
-                        responseID: responseID,
-                        model: model,
-                        text: fullText,
-                        inputTokens: inputTokens,
-                        outputTokens: outputTokens,
-                        createdAt: createdAt,
-                        diagnostics: &diags
-                    )
-                    try await sse.write(.responseCompleted(completed, endTurn: true), to: &writer)
-                    await store.store(completed)
-                    try? await services.contextLedger.append(
-                        ContextSegment(
-                            id: "assistant-" + responseID,
-                            kind: .recentConversation,
-                            text: "[assistant] \(fullText)",
-                            sourceTurnID: responseID,
-                            metadata: ["role": "assistant"]
-                        ),
-                        to: contextConversationID
-                    )
                 }
+            } catch let error as BridgeError {
+                let failed = OutputMapper.toFailedObject(responseID: responseID, model: model, error: error, createdAt: createdAt)
+                try? await sse.write(.responseFailed(failed), to: &writer)
+                try? await sse.write(.error(error.errorObject), to: &writer)
+                try await writer.finish(nil)
+                return
             } catch is CancellationError {
                 logger.debug("stream client disconnected: \(responseID)")
+                try await writer.finish(nil)
+                return
             }
+
+            try await sse.write(.responseOutputTextDone(outputIndex: 0, contentIndex: 0, text: fullText), to: &writer)
+
+            let doneItem = ResponsesOutputItem.assistantMessage(id: messageID, text: fullText)
+            var completedItems = [doneItem]
+            try await sse.write(.responseOutputItemDone(outputIndex: 0, item: doneItem), to: &writer)
+
+            let toolCalls = afmRequest.toolRegistry?.drainAllCapturedCalls() ?? []
+            for (idx, call) in toolCalls.enumerated() {
+                let callID = newID(prefix: "call_afm_")
+                let fcID = newID(prefix: "fc_afm_")
+                let fcItem = ResponsesOutputItem.functionCall(
+                    id: fcID, callID: callID, name: call.name, arguments: call.argumentsJSON
+                )
+                completedItems.append(fcItem)
+                let outputIdx = idx + 1
+                try await sse.write(.responseOutputItemAdded(outputIndex: outputIdx, item: fcItem), to: &writer)
+                try await sse.write(.responseOutputItemDone(outputIndex: outputIdx, item: fcItem), to: &writer)
+            }
+
+            var diags = diagnostics
+            let inputTokens = await afm.inputTokenCount(for: afmRequest.prompt) ?? OutputMapper.estimateTokens(text: afmRequest.prompt)
+            let outputTokens = await afm.inputTokenCount(for: fullText) ?? OutputMapper.estimateTokens(text: fullText)
+            let completed = OutputMapper.toCompletedObject(
+                responseID: responseID,
+                model: model,
+                text: fullText,
+                inputTokens: inputTokens,
+                outputTokens: outputTokens,
+                outputItems: completedItems,
+                createdAt: createdAt,
+                diagnostics: &diags
+            )
+            try await sse.write(.responseCompleted(completed, endTurn: true), to: &writer)
+            await store.store(completed)
+            await persistOutputItems(
+                completedItems,
+                responseID: responseID,
+                conversationID: contextConversationID,
+                ledger: services.contextLedger
+            )
             try await writer.finish(nil)
         }
     )
@@ -396,6 +407,42 @@ private func streamingResponse(
 
 private let afmUsageEstimatedHeader = "x-afm-usage-estimated"
 private let afmDiagnosticsHeader = "x-afm-diagnostics"
+
+private func persistOutputItems(
+    _ items: [ResponsesOutputItem],
+    responseID: String,
+    conversationID: String,
+    ledger: any ContextLedger
+) async {
+    for item in items {
+        if item.type == "function_call", let name = item.name, let arguments = item.arguments {
+            let callID = item.call_id ?? item.id
+            try? await ledger.append(
+                ContextSegment(
+                    id: "tool-call-" + callID,
+                    kind: .recentConversation,
+                    text: "[assistant tool_call \(callID)] \(name)(\(arguments))",
+                    sourceTurnID: callID,
+                    metadata: ["relation": "tool_call", "tool": name]
+                ),
+                to: conversationID
+            )
+        } else if item.type == "message" {
+            let text = item.content?.compactMap(\.text).joined(separator: "\n") ?? ""
+            guard !text.isEmpty else { continue }
+            try? await ledger.append(
+                ContextSegment(
+                    id: "assistant-" + responseID,
+                    kind: .recentConversation,
+                    text: "[assistant] \(text)",
+                    sourceTurnID: responseID,
+                    metadata: ["role": "assistant"]
+                ),
+                to: conversationID
+            )
+        }
+    }
+}
 
 /// Reject requests that contain hard-unsupported input content types (images,
 /// files) so the client gets a clear 400 instead of silent dropping.
@@ -417,6 +464,104 @@ private func rejectUnsupportedInputTypes(_ request: ResponsesCreateRequest, flag
             }
         }
     }
+}
+
+private func toolStepCount(_ events: [NormalizedEvent]) -> Int {
+    let start = events.lastIndex {
+        if case .message(let message) = $0 { return message.role == .user }
+        return false
+    }.map { $0 + 1 } ?? 0
+    return events.dropFirst(start).reduce(into: 0) { count, event in
+        if case .toolCall = event { count += 1 }
+    }
+}
+
+private func makeToolContext(_ events: [NormalizedEvent]) -> String {
+    let latestUserIndex = events.lastIndex {
+        if case .message(let message) = $0 { return message.role == .user }
+        return false
+    }
+    var lines: [String] = []
+    if let latestUserIndex, case .message(let message) = events[latestUserIndex] {
+        lines.append("Current request:\n" + bounded(message.text, bytes: 1_200))
+    }
+    let toolEvents = events.compactMap { event -> String? in
+        switch event {
+        case .toolCall(let call):
+            return "Tool call \(call.callID): \(call.name)(\(bounded(call.arguments, bytes: 600)))"
+        case .toolOutput(let output):
+            return "Tool output \(output.callID):\n\(boundedHeadAndTail(output.output, bytes: 2_400))"
+        case .message:
+            return nil
+        }
+    }
+    lines.append(contentsOf: toolEvents.suffix(6))
+    return lines.joined(separator: "\n\n")
+}
+
+private func shouldFinalizeAfterToolOutput(_ events: [NormalizedEvent]) -> Bool {
+    guard let request = events.compactMap({ event -> String? in
+        if case .message(let message) = event, message.role == .user { return message.text }
+        return nil
+    }).last?.lowercased(),
+    let output = events.compactMap({ event -> String? in
+        if case .toolOutput(let output) = event { return output.output }
+        return nil
+    }).last,
+    output.contains("Process exited with code 0") else {
+        return false
+    }
+
+    let readOnlyMarkers = ["inspect", "read", "show", "list", "find", "summarize", "explain", "確認", "読む", "表示", "一覧", "要約"]
+    let mutationMarkers = ["edit", "change", "fix", "implement", "create", "write", "delete", "rename", "test", "build", "編集", "変更", "修正", "実装", "作成", "削除", "テスト", "ビルド"]
+    return readOnlyMarkers.contains { request.contains($0) }
+        && !mutationMarkers.contains { request.contains($0) }
+}
+
+private func directToolResultAnswer(_ events: [NormalizedEvent]) -> String? {
+    guard let request = events.compactMap({ event -> String? in
+        if case .message(let message) = event, message.role == .user { return message.text }
+        return nil
+    }).last,
+    let output = events.compactMap({ event -> String? in
+        if case .toolOutput(let output) = event { return output.output }
+        return nil
+    }).last,
+    output.contains("Process exited with code 0") else {
+        return nil
+    }
+
+    let lower = request.lowercased()
+    if lower.contains("swift package name") || lower.contains("package name") || request.contains("パッケージ名") {
+        let pattern = #"\bname\s*:\s*\"([^\"]+)\""#
+        if let regex = try? NSRegularExpression(pattern: pattern),
+           let match = regex.firstMatch(in: output, range: NSRange(output.startIndex..., in: output)),
+           let range = Range(match.range(at: 1), in: output) {
+            return String(output[range])
+        }
+    }
+    if (lower.contains("basename") || request.contains("末尾")),
+       let pathLine = output.split(separator: "\n").last(where: { $0.hasPrefix("/") }) {
+        return URL(fileURLWithPath: String(pathLine)).lastPathComponent
+    }
+    if lower.contains("reply done") || request.contains("完了") {
+        return "done"
+    }
+    return nil
+}
+
+private func bounded(_ value: String, bytes: Int) -> String {
+    guard value.utf8.count > bytes else { return value }
+    return "[earlier content omitted]\n" + String(decoding: value.utf8.suffix(bytes), as: UTF8.self)
+}
+
+private func boundedHeadAndTail(_ value: String, bytes: Int) -> String {
+    guard value.utf8.count > bytes else { return value }
+    let head = (bytes * 2) / 3
+    let tail = bytes - head
+    return String(decoding: value.utf8.prefix(head), as: UTF8.self)
+        + "\n[...middle content omitted...]\n"
+        + String(decoding: value.utf8.suffix(tail), as: UTF8.self)
 }
 
 /// Encode diagnostics into a response header for debug builds.

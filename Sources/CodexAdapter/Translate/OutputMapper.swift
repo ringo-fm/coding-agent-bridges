@@ -66,6 +66,7 @@ public enum OutputMapper {
         text: String,
         inputTokens: Int?,
         outputTokens: Int?,
+        outputItems: [ResponsesOutputItem]? = nil,
         createdAt: Int = Int(Date().timeIntervalSince1970),
         diagnostics: inout Diagnostics
     ) -> ResponsesResponse {
@@ -82,7 +83,7 @@ public enum OutputMapper {
             created_at: createdAt,
             status: .completed,
             model: model,
-            output: [message],
+            output: outputItems ?? [message],
             usage: usage
         )
     }
@@ -145,4 +146,3 @@ public func newID(prefix: String) -> String {
     let uuid = UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
     return "\(prefix)\(uuid)"
 }
-

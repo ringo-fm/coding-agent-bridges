@@ -15,6 +15,7 @@ public struct GatewayConfiguration: Sendable, Equatable {
     public var contextMode: ContextStorageMode
     public var contextPath: String?
     public var retentionDays: Int
+    public var verbose: Bool
 
     public init(
         host: String = "127.0.0.1",
@@ -22,7 +23,8 @@ public struct GatewayConfiguration: Sendable, Equatable {
         authToken: String = RingoRuntime.localToken,
         contextMode: ContextStorageMode = .memory,
         contextPath: String? = nil,
-        retentionDays: Int = 30
+        retentionDays: Int = 30,
+        verbose: Bool = false
     ) {
         self.host = host
         self.port = port
@@ -30,6 +32,7 @@ public struct GatewayConfiguration: Sendable, Equatable {
         self.contextMode = contextMode
         self.contextPath = contextPath
         self.retentionDays = retentionDays
+        self.verbose = verbose
     }
 
     public static func fromEnvironment(
@@ -43,7 +46,8 @@ public struct GatewayConfiguration: Sendable, Equatable {
             authToken: RingoRuntime.gatewayToken(environment: environment),
             contextMode: ContextStorageMode(environmentValue: environment["AFM_BRIDGE_CONTEXT_MODE"]),
             contextPath: environment["AFM_BRIDGE_CONTEXT_PATH"],
-            retentionDays: Int(environment["AFM_BRIDGE_CONTEXT_RETENTION_DAYS"] ?? "30") ?? 30
+            retentionDays: Int(environment["AFM_BRIDGE_CONTEXT_RETENTION_DAYS"] ?? "30") ?? 30,
+            verbose: false
         )
     }
 }
@@ -197,7 +201,13 @@ public enum RingoGateway {
         ledger suppliedLedger: (any ContextLedger)? = nil
     ) async throws -> some ApplicationProtocol {
         var logger = Logger(label: "ringo-gateway")
-        logger.logLevel = .info
+        logger.logLevel = config.verbose ? .info : .critical
+        var serverLogger = Logger(label: "ringo-gateway-server")
+        // Hummingbird reports normal task cancellation during launcher teardown
+        // as errors ("Already closed" / CancellationError). Startup failures
+        // still propagate from runService; keep routine server lifecycle noise
+        // out of the user-facing coding-agent session.
+        serverLogger.logLevel = .critical
         let ledger = try suppliedLedger ?? ContextLedgerFactory.make(
             mode: config.contextMode,
             path: config.contextPath,
@@ -215,7 +225,7 @@ public enum RingoGateway {
         )
         mountCodexRoutes(
             on: router.group("openai"), host: config.host, port: config.port, authToken: config.authToken,
-            sharedBackend: backend, contextLedger: ledger, logger: logger
+            sharedBackend: backend, contextLedger: ledger, logger: logger, includeSharedRoutes: true
         )
         mountClaudeRoutes(
             on: router.group("anthropic"),
@@ -236,7 +246,7 @@ public enum RingoGateway {
                 address: .hostname(config.host, port: config.port),
                 serverName: "ringo-gateway"
             ),
-            logger: logger
+            logger: serverLogger
         )
     }
 

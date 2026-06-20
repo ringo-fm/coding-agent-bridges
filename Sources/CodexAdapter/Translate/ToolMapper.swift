@@ -18,8 +18,15 @@ import FoundationModels
 public enum ToolMapper {
     /// Map an array of OpenAI tool definitions to a `BridgedToolRegistry`.
     /// Returns nil if no valid tools could be constructed.
-    public static func map(_ tools: [ResponsesTool]) -> BridgedToolRegistry? {
-        let bridged: [BridgedTool] = tools.compactMap { mapOne($0) }
+    public static func map(
+        _ tools: [ResponsesTool],
+        allowedNames: Set<String>? = nil
+    ) -> BridgedToolRegistry? {
+        let bridged: [BridgedTool] = tools.compactMap { tool in
+            let name = tool.name ?? tool.type
+            guard allowedNames?.contains(name) ?? true else { return nil }
+            return mapOne(tool)
+        }
         if bridged.isEmpty { return nil }
         return BridgedToolRegistry(tools: bridged)
     }

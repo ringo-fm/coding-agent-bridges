@@ -97,6 +97,7 @@ public struct ResponsesInputItem: Codable, Sendable, Equatable {
     public var call_id: String?
     public var name: String?
     public var arguments: String?
+    public var output: String?
 
     public init(
         type: String? = nil,
@@ -106,7 +107,8 @@ public struct ResponsesInputItem: Codable, Sendable, Equatable {
         id: String? = nil,
         call_id: String? = nil,
         name: String? = nil,
-        arguments: String? = nil
+        arguments: String? = nil,
+        output: String? = nil
     ) {
         self.type = type
         self.role = role
@@ -116,6 +118,7 @@ public struct ResponsesInputItem: Codable, Sendable, Equatable {
         self.call_id = call_id
         self.name = name
         self.arguments = arguments
+        self.output = output
     }
 
     /// Convenience constructor for a plain user text message.
@@ -198,4 +201,3 @@ public struct ResponsesReasoning: Codable, Sendable, Equatable {
         self.summary = summary
     }
 }
-

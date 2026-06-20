@@ -33,6 +33,51 @@ Launcher commands select an available localhost port automatically, inherit the
 terminal's standard input and output, forward interrupts, and return the child
 agent's exit status.
 
+### Daily Codex use
+
+Build and install the launcher on this Mac:
+
+```bash
+swift build -c release --product ringo
+install -m 755 .build/release/ringo "$HOME/.local/bin/ringo"
+ringo doctor
+```
+
+`ringo codex` uses a small AFM-specific Codex home by default, disables web
+search and personality instructions, advertises a 4,096-token context window,
+and starts the bridge with persistent local context:
+
+```bash
+ringo codex
+ringo codex -- exec --sandbox read-only "inspect Package.swift"
+ringo codex --context-mode memory
+ringo codex --context-mode off
+```
+
+Non-interactive `ringo codex -- exec ...` runs in concise mode by default and
+prints only the final agent response. Add `--verbose` before `--` to show Codex
+events and gateway diagnostics:
+
+```bash
+ringo codex --verbose -- exec --sandbox read-only "inspect Package.swift"
+```
+
+Use `--inherit-user-config` when the normal Codex home, hooks, MCP configuration,
+and plugins are required. The AFM bridge still limits the default model-facing
+tool catalog to the text-based core coding tools (`exec_command`, `write_stdin`,
+`apply_patch`, and `request_user_input`) to fit the local model context.
+
+The AFM-specific Codex state and bridge context are stored under:
+
+```text
+~/Library/Application Support/coding-agent-bridges/codex-home
+~/Library/Application Support/coding-agent-bridges/context.sqlite3
+```
+
+Remove those paths to clear AFM Codex sessions and bridge history. Stop any
+running `ringo` process before deleting the SQLite database and its `-wal` and
+`-shm` companions.
+
 ## Unified gateway
 
 Use `serve` for editors, debugging, or integrations that are not launched as a

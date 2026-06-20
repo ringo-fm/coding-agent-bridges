@@ -75,19 +75,34 @@ public struct Model: Codable, Sendable, Equatable {
 public struct CodexModelInfo: Codable, Sendable, Equatable {
     public var slug: String
     public var display_name: String
+    public var description: String?
+    public var default_reasoning_level: String?
     public var supported_reasoning_levels: [ReasoningEffortPreset]
     public var shell_type: String
     public var visibility: String
     public var supported_in_api: Bool
     public var priority: Int
+    public var availability_nux: String?
+    public var upgrade: String?
     public var base_instructions: String
+    public var model_messages: ModelMessages?
     public var supports_reasoning_summaries: Bool
+    public var default_reasoning_summary: String
     public var support_verbosity: Bool
+    public var default_verbosity: String?
+    public var apply_patch_tool_type: String?
+    public var web_search_tool_type: String
     public var truncation_policy: TruncationPolicy
     public var supports_parallel_tool_calls: Bool
+    public var supports_image_detail_original: Bool
     public var experimental_supported_tools: [String]
     // Optional but useful for Codex to respect the 4096 context ceiling.
     public var context_window: Int?
+    public var max_context_window: Int?
+    public var auto_compact_token_limit: Int?
+    public var effective_context_window_percent: Int
+    public var input_modalities: [String]
+    public var supports_search_tool: Bool
 
     public struct ReasoningEffortPreset: Codable, Sendable, Equatable {
         public var effort: String
@@ -107,41 +122,91 @@ public struct CodexModelInfo: Codable, Sendable, Equatable {
         }
     }
 
+    public struct ModelMessages: Codable, Sendable, Equatable {
+        public var instructions_template: String?
+        public var instructions_variables: InstructionsVariables?
+
+        public init(
+            instructionsTemplate: String? = "",
+            instructionsVariables: InstructionsVariables? = nil
+        ) {
+            instructions_template = instructionsTemplate
+            instructions_variables = instructionsVariables
+        }
+    }
+
+    public struct InstructionsVariables: Codable, Sendable, Equatable {
+        public var personality_default: String?
+        public var personality_friendly: String?
+        public var personality_pragmatic: String?
+    }
+
     public init(
         slug: String,
         display_name: String,
+        description: String? = nil,
+        default_reasoning_level: String? = nil,
         supported_reasoning_levels: [ReasoningEffortPreset] = [],
         shell_type: String = "shell_command",
         visibility: String = "list",
         supported_in_api: Bool = true,
         priority: Int = 1,
+        availability_nux: String? = nil,
+        upgrade: String? = nil,
         base_instructions: String = "",
+        model_messages: ModelMessages? = ModelMessages(),
         supports_reasoning_summaries: Bool = false,
+        default_reasoning_summary: String = "none",
         support_verbosity: Bool = false,
+        default_verbosity: String? = nil,
+        apply_patch_tool_type: String? = "freeform",
+        web_search_tool_type: String = "text",
         truncation_policy: TruncationPolicy,
         supports_parallel_tool_calls: Bool = false,
+        supports_image_detail_original: Bool = false,
         experimental_supported_tools: [String] = [],
-        context_window: Int? = 4096
+        context_window: Int? = 4096,
+        max_context_window: Int? = 4096,
+        auto_compact_token_limit: Int? = 3072,
+        effective_context_window_percent: Int = 75,
+        input_modalities: [String] = ["text"],
+        supports_search_tool: Bool = false
     ) {
         self.slug = slug
         self.display_name = display_name
+        self.description = description
+        self.default_reasoning_level = default_reasoning_level
         self.supported_reasoning_levels = supported_reasoning_levels
         self.shell_type = shell_type
         self.visibility = visibility
         self.supported_in_api = supported_in_api
         self.priority = priority
+        self.availability_nux = availability_nux
+        self.upgrade = upgrade
         self.base_instructions = base_instructions
+        self.model_messages = model_messages
         self.supports_reasoning_summaries = supports_reasoning_summaries
+        self.default_reasoning_summary = default_reasoning_summary
         self.support_verbosity = support_verbosity
+        self.default_verbosity = default_verbosity
+        self.apply_patch_tool_type = apply_patch_tool_type
+        self.web_search_tool_type = web_search_tool_type
         self.truncation_policy = truncation_policy
         self.supports_parallel_tool_calls = supports_parallel_tool_calls
+        self.supports_image_detail_original = supports_image_detail_original
         self.experimental_supported_tools = experimental_supported_tools
         self.context_window = context_window
+        self.max_context_window = max_context_window
+        self.auto_compact_token_limit = auto_compact_token_limit
+        self.effective_context_window_percent = effective_context_window_percent
+        self.input_modalities = input_modalities
+        self.supports_search_tool = supports_search_tool
     }
 
     public static let appleFoundationLocal = CodexModelInfo(
         slug: "apple-foundation-local",
         display_name: "Apple Foundation Models (Local)",
+        description: "On-device Apple Foundation Models backend for bounded coding tasks.",
         shell_type: "shell_command",
         visibility: "list",
         priority: 1,
@@ -152,6 +217,7 @@ public struct CodexModelInfo: Codable, Sendable, Equatable {
     public static let appleFoundationFast = CodexModelInfo(
         slug: "apple-foundation-fast",
         display_name: "Apple Foundation Models Fast (Local)",
+        description: "On-device Apple Foundation Models backend optimized for short tasks.",
         shell_type: "shell_command",
         visibility: "list",
         priority: 2,
@@ -162,6 +228,7 @@ public struct CodexModelInfo: Codable, Sendable, Equatable {
     public static let appleFoundationStructured = CodexModelInfo(
         slug: "apple-foundation-structured",
         display_name: "Apple Foundation Models Structured (Local)",
+        description: "On-device Apple Foundation Models backend with structured output support.",
         shell_type: "shell_command",
         visibility: "list",
         priority: 3,
@@ -183,4 +250,3 @@ public enum SupportedModels {
         aliases.contains(model)
     }
 }
-

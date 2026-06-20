@@ -40,6 +40,16 @@ struct ToolMappingTests {
         #expect(names.contains("apply_patch"))
     }
 
+    @Test("ToolMapper can restrict the AFM catalog to core coding tools")
+    func mapCoreToolAllowlist() throws {
+        let registry = try #require(ToolMapper.map([
+            ResponsesTool(type: "function", name: "exec_command", description: "Run command"),
+            ResponsesTool(type: "function", name: "view_image", description: "View image"),
+            ResponsesTool(type: "function", name: "request_user_input", description: "Ask")
+        ], allowedNames: codexAFMCoreToolNames))
+        #expect(registry.names == ["exec_command", "request_user_input"])
+    }
+
     @Test("ToolMapper returns nil for empty tools")
     func mapEmptyTools() {
         #expect(ToolMapper.map([]) == nil)
@@ -202,6 +212,46 @@ struct ToolMappingTests {
         #expect(normalized.instructions == "Only create output/report.md.")
         #expect(prompt.contains("System instructions:\nOnly create output/report.md."))
         #expect(prompt.contains("[tool_output call_1] active IDs are 3 and 11"))
+    }
+
+    @Test("InputNormalizer preserves message, tool call, and output order")
+    func normalizedEventsPreserveWireOrder() {
+        let request = ResponsesCreateRequest(
+            model: "apple-foundation-local",
+            input: .items([
+                .user(text: "Inspect the package"),
+                ResponsesInputItem(
+                    type: "function_call", id: "fc_1", call_id: "call_1",
+                    name: "exec_command", arguments: #"{"cmd":"pwd"}"#
+                ),
+                ResponsesInputItem(
+                    type: "function_call_output", call_id: "call_1",
+                    output: "/tmp/project\n"
+                )
+            ])
+        )
+        let normalized = InputNormalizer.normalize(request, flags: .codexTools)
+        #expect(normalized.events.count == 3)
+        guard case .message = normalized.events[0] else { Issue.record("first event must be message"); return }
+        guard case .toolCall = normalized.events[1] else { Issue.record("second event must be tool call"); return }
+        guard case .toolOutput = normalized.events[2] else { Issue.record("third event must be tool output"); return }
+    }
+
+    @Test("Tool loop stops at the step limit and after two canonical duplicate calls")
+    func toolLoopLimits() {
+        #expect(CodexToolLoopPolicy.stopReason(stepCount: 6, maxSteps: 6) != nil)
+        #expect(CodexToolLoopPolicy.stopReason(stepCount: 5, maxSteps: 6) == nil)
+
+        let prior = [
+            CapturedToolCall(name: "exec_command", argumentsJSON: #"{"cmd":"pwd","yield_time_ms":1000}"#),
+            CapturedToolCall(name: "exec_command", argumentsJSON: #"{"yield_time_ms":1000,"cmd":"pwd"}"#)
+        ]
+        let proposed = CapturedToolCall(
+            name: "exec_command", argumentsJSON: #"{ "cmd": "pwd", "yield_time_ms": 1000 }"#
+        )
+        #expect(CodexToolLoopPolicy.stopReason(
+            stepCount: 2, maxSteps: 6, proposed: proposed, priorCalls: prior
+        ) != nil)
     }
 
     @Test("InputNormalizer ignores function_call items when function-call disabled")

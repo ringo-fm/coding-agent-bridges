@@ -1,4 +1,5 @@
 import Testing
+import Foundation
 import AgentBridgeCore
 import Hummingbird
 import HummingbirdTesting
@@ -33,7 +34,78 @@ import HTTPTypes
         #expect(invocation.arguments.suffix(2) == ["exec", "hello"])
         #expect(invocation.arguments.contains("model_provider=\"ringo\""))
         #expect(invocation.arguments.contains("model_providers.ringo.base_url=\"http://127.0.0.1:9002/openai/v1\""))
+        #expect(invocation.arguments.contains("model_context_window=4096"))
+        #expect(invocation.arguments.contains("web_search=\"disabled\""))
         #expect(invocation.environment["AFM_BRIDGE_API_KEY"] == "ringo-local")
+        #expect(invocation.environment["CODEX_HOME"] == RingoRuntime.defaultCodexHome)
+    }
+
+    @Test func codexCanInheritUserConfiguration() throws {
+        let invocation = try RingoRuntime.invocation(
+            for: .codex,
+            host: "127.0.0.1",
+            port: 9002,
+            arguments: [],
+            inheritedEnvironment: ["CODEX_HOME": "/tmp/existing-codex"],
+            executable: "/tmp/codex",
+            inheritCodexConfig: true
+        )
+        #expect(invocation.environment["CODEX_HOME"] == "/tmp/existing-codex")
+    }
+
+    @Test func codexExecSkipsGitCheckOnlyOutsideRepositories() throws {
+        let nonGit = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ringo-nongit-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: nonGit, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: nonGit) }
+
+        let outside = try RingoRuntime.invocation(
+            for: .codex,
+            host: "127.0.0.1",
+            port: 9002,
+            arguments: ["exec", "inspect"],
+            inheritedEnvironment: [:],
+            executable: "/tmp/codex",
+            workingDirectory: nonGit.path
+        )
+        #expect(outside.arguments.contains("--skip-git-repo-check"))
+
+        let inside = try RingoRuntime.invocation(
+            for: .codex,
+            host: "127.0.0.1",
+            port: 9002,
+            arguments: ["exec", "inspect"],
+            inheritedEnvironment: [:],
+            executable: "/tmp/codex",
+            workingDirectory: FileManager.default.currentDirectoryPath
+        )
+        #expect(!inside.arguments.contains("--skip-git-repo-check"))
+    }
+
+    @Test func extractsOnlyTheFinalCodexAgentMessage() {
+        let jsonLines = """
+        {"type":"thread.started","thread_id":"thread-1"}
+        {"type":"item.completed","item":{"type":"agent_message","text":"first"}}
+        {"type":"item.completed","item":{"type":"command_execution","command":"pwd"}}
+        {"type":"item.completed","item":{"type":"agent_message","text":"Hello!"}}
+        {"type":"turn.completed"}
+        """
+        #expect(RingoRuntime.finalAgentMessage(from: jsonLines) == "Hello!")
+    }
+
+    @Test func gatewayLaunchConfigurationDefaultsCanBeMadePersistent() throws {
+        let config = try RingoRuntime.gatewayConfiguration(
+            host: "127.0.0.1",
+            port: 9000,
+            contextMode: "persistent",
+            environment: ["AFM_BRIDGE_CONTEXT_RETENTION_DAYS": "30"]
+        )
+        #expect(config.contextMode == .persistent)
+        #expect(config.contextPath == nil)
+        #expect(config.retentionDays == 30)
+        #expect(throws: RingoError.self) {
+            try RingoRuntime.gatewayConfiguration(host: "127.0.0.1", port: 9000, contextMode: "invalid")
+        }
     }
 
     @Test func allocatesBindableEphemeralPort() throws {
@@ -144,6 +216,14 @@ import HTTPTypes
         try await app.test(.router) { client in
             try await client.execute(uri: "/v1/models", method: .get, headers: headers) { response in
                 #expect(response.status == .ok)
+            }
+            try await client.execute(
+                uri: "/openai/v1/models?client_version=0.135.0", method: .get, headers: headers
+            ) { response in
+                #expect(response.status == .ok)
+                let body = String(buffer: response.body)
+                #expect(body.contains("apple-foundation-local"))
+                #expect(body.contains("context_window"))
             }
             try await client.execute(uri: "/openai/v1/responses", method: .post, headers: headers) { response in
                 #expect(response.status != .notFound)

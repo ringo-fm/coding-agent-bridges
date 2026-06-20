@@ -56,12 +56,22 @@ public struct NormalizedToolOutput: Sendable, Equatable {
     }
 }
 
+/// A normalized input item in the same order it appeared on the Responses
+/// request. Keeping this ordering is essential for tool loops: a tool call must
+/// always precede the output that satisfies it.
+public enum NormalizedEvent: Sendable, Equatable {
+    case message(NormalizedMessage)
+    case toolCall(NormalizedToolCall)
+    case toolOutput(NormalizedToolOutput)
+}
+
 /// Result of normalizing a Responses API request.
 public struct NormalizedInput: Sendable {
     public let instructions: String?
     public let messages: [NormalizedMessage]
     public var toolCalls: [NormalizedToolCall]
     public var toolOutputs: [NormalizedToolOutput]
+    public var events: [NormalizedEvent]
     public var diagnostics: Diagnostics
 
     public init(
@@ -69,12 +79,16 @@ public struct NormalizedInput: Sendable {
         messages: [NormalizedMessage],
         toolCalls: [NormalizedToolCall] = [],
         toolOutputs: [NormalizedToolOutput] = [],
+        events: [NormalizedEvent]? = nil,
         diagnostics: Diagnostics
     ) {
         self.instructions = instructions
         self.messages = messages
         self.toolCalls = toolCalls
         self.toolOutputs = toolOutputs
+        self.events = events ?? messages.map(NormalizedEvent.message)
+            + toolCalls.map(NormalizedEvent.toolCall)
+            + toolOutputs.map(NormalizedEvent.toolOutput)
         self.diagnostics = diagnostics
     }
 }
@@ -118,6 +132,7 @@ public enum InputNormalizer {
         var messages: [NormalizedMessage] = []
         var toolCalls: [NormalizedToolCall] = []
         var toolOutputs: [NormalizedToolOutput] = []
+        var events: [NormalizedEvent] = []
 
         for item in request.input.asItems {
             let itemType = item.type ?? "message"
@@ -153,15 +168,19 @@ public enum InputNormalizer {
 
                 let text = textParts.joined(separator: "\n")
                 if !text.isEmpty {
-                    messages.append(NormalizedMessage(role: role, text: text))
+                    let message = NormalizedMessage(role: role, text: text)
+                    messages.append(message)
+                    events.append(.message(message))
                 }
 
             case "function_call":
                 if flags.functionCall {
                     if let name = item.name, let args = item.arguments, let callID = item.call_id ?? item.id {
-                        toolCalls.append(NormalizedToolCall(
+                        let call = NormalizedToolCall(
                             callID: callID, name: name, arguments: args
-                        ))
+                        )
+                        toolCalls.append(call)
+                        events.append(.toolCall(call))
                     }
                 } else {
                     diagnostics.ignore("function_call", reason: "function calls not enabled")
@@ -169,10 +188,12 @@ public enum InputNormalizer {
 
             case "function_call_output":
                 if flags.functionCall {
-                    if let callID = item.call_id, let output = item.arguments ?? item.name {
-                        toolOutputs.append(NormalizedToolOutput(
+                    if let callID = item.call_id, let output = item.output ?? item.arguments ?? item.name {
+                        let output = NormalizedToolOutput(
                             callID: callID, output: output
-                        ))
+                        )
+                        toolOutputs.append(output)
+                        events.append(.toolOutput(output))
                     }
                 } else {
                     diagnostics.ignore("function_call_output", reason: "function calls not enabled")
@@ -188,8 +209,8 @@ public enum InputNormalizer {
             messages: messages,
             toolCalls: toolCalls,
             toolOutputs: toolOutputs,
+            events: events,
             diagnostics: diagnostics
         )
     }
 }
-

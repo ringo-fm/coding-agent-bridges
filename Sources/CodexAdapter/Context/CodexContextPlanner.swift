@@ -168,46 +168,50 @@ enum CodexContextPlanner {
             ))
         }
 
-        let recentStart = max(0, normalized.messages.count - 4)
-        let lastUser = normalized.messages.lastIndex { $0.role == .user }
-        for (index, message) in normalized.messages.enumerated() {
-            let rendered = "[\(message.role.rawValue)] \(message.text)"
-            let kind: ContextSegmentKind
-            switch message.role {
-            case .system, .developer:
-                kind = .instruction
-            case .user where index == lastUser:
-                kind = .currentRequest
-            default:
-                kind = index >= recentStart ? .recentConversation : .olderConversation
+        let lastUserEvent = normalized.events.lastIndex {
+            if case .message(let message) = $0 { return message.role == .user }
+            return false
+        }
+        let recentStart = max(0, normalized.events.count - 8)
+        for (index, event) in normalized.events.enumerated() {
+            switch event {
+            case .message(let message):
+                let rendered = "[\(message.role.rawValue)] \(message.text)"
+                let kind: ContextSegmentKind
+                switch message.role {
+                case .system, .developer:
+                    kind = .instruction
+                case .user where index == lastUserEvent:
+                    kind = .currentRequest
+                default:
+                    kind = index >= recentStart ? .recentConversation : .olderConversation
+                }
+                segments.append(ContextSegment(
+                    id: "message-" + ConversationFingerprint.digest("\(index):\(rendered)"),
+                    kind: kind,
+                    text: rendered,
+                    sourceTurnID: String(index),
+                    metadata: ["role": message.role.rawValue]
+                ))
+            case .toolCall(let call):
+                let rendered = "[assistant tool_call \(call.callID)] \(call.name)(\(call.arguments))"
+                segments.append(ContextSegment(
+                    id: "tool-call-" + ConversationFingerprint.digest(rendered),
+                    kind: .recentConversation,
+                    text: rendered,
+                    sourceTurnID: call.callID,
+                    metadata: ["relation": "tool_call", "tool": call.name]
+                ))
+            case .toolOutput(let output):
+                let rendered = "[tool_output \(output.callID)] \(output.output)"
+                segments.append(ContextSegment(
+                    id: "tool-output-" + ConversationFingerprint.digest(rendered),
+                    kind: .unresolvedToolResult,
+                    text: rendered,
+                    sourceTurnID: output.callID,
+                    metadata: ["relation": "tool_result"]
+                ))
             }
-            segments.append(ContextSegment(
-                id: "message-" + ConversationFingerprint.digest("\(index):\(rendered)"),
-                kind: kind,
-                text: rendered,
-                sourceTurnID: String(index),
-                metadata: ["role": message.role.rawValue]
-            ))
-        }
-        for output in normalized.toolOutputs {
-            let rendered = "[tool_output \(output.callID)] \(output.output)"
-            segments.append(ContextSegment(
-                id: "tool-output-" + ConversationFingerprint.digest(rendered),
-                kind: .unresolvedToolResult,
-                text: rendered,
-                sourceTurnID: output.callID,
-                metadata: ["relation": "tool_result"]
-            ))
-        }
-        for call in normalized.toolCalls {
-            let rendered = "[assistant tool_call] \(call.name)(\(call.arguments))"
-            segments.append(ContextSegment(
-                id: "tool-call-" + ConversationFingerprint.digest(rendered),
-                kind: .recentConversation,
-                text: rendered,
-                sourceTurnID: call.callID,
-                metadata: ["relation": "tool_call", "tool": call.name]
-            ))
         }
         return segments
     }
