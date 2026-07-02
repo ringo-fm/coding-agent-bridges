@@ -73,7 +73,9 @@ public enum Routes {
             router.get("v1/models") { _, _ in
                 var headers = HTTPFields()
                 headers[.contentType] = "application/json; charset=utf-8"
-                return Response(status: .ok, headers: headers, body: .init(byteBuffer: try encodeBuffer(ModelsList.default)))
+                return Response(status: .ok, headers: headers, body: .init(byteBuffer: try encodeBuffer(
+                    ModelsList.runtime(contextSize: services.afm.contextSize)
+                )))
             }
         }
 
@@ -153,18 +155,12 @@ public enum Routes {
                 maxOutputTokens: effectiveBody.max_output_tokens ?? PromptBuilder.defaultOutputReserve,
                 topP: effectiveBody.top_p,
                 toolRegistry: toolRegistry,
+                toolChoice: effectiveBody.tool_choice?.agentChoice ?? .auto,
                 conversationKey: prepared.sessionKey,
                 sessionFingerprint: prepared.sessionFingerprint,
                 resultingSessionFingerprint: prepared.resultingSessionFingerprint,
                 incrementalPrompt: prepared.incrementalPrompt,
-                toolContext: makeToolContext(normalized.events),
-                priorToolCalls: normalized.toolCalls.map {
-                    CapturedToolCall(name: $0.name, argumentsJSON: $0.arguments)
-                },
-                toolStepCount: toolStepCount(normalized.events),
-                maxToolSteps: services.maxToolSteps,
-                finalizeAfterToolOutput: shouldFinalizeAfterToolOutput(normalized.events),
-                directToolResultAnswer: directToolResultAnswer(normalized.events)
+                decisionContext: toolDecisionContext(normalized.events)
             )
 
             if stream {
@@ -214,7 +210,7 @@ public func mountCodexRoutes(
     contextLedger: any ContextLedger,
     logger: Logger,
     includeSharedRoutes: Bool = false,
-    allowedToolNames: Set<String>? = codexAFMCoreToolNames,
+    allowedToolNames: Set<String>? = nil,
     maxToolSteps: Int = 6
 ) {
     let config = BridgeConfig(
@@ -466,102 +462,27 @@ private func rejectUnsupportedInputTypes(_ request: ResponsesCreateRequest, flag
     }
 }
 
-private func toolStepCount(_ events: [NormalizedEvent]) -> Int {
-    let start = events.lastIndex {
-        if case .message(let message) = $0 { return message.role == .user }
-        return false
-    }.map { $0 + 1 } ?? 0
-    return events.dropFirst(start).reduce(into: 0) { count, event in
-        if case .toolCall = event { count += 1 }
-    }
-}
-
-private func makeToolContext(_ events: [NormalizedEvent]) -> String {
-    let latestUserIndex = events.lastIndex {
-        if case .message(let message) = $0 { return message.role == .user }
-        return false
-    }
-    var lines: [String] = []
-    if let latestUserIndex, case .message(let message) = events[latestUserIndex] {
-        lines.append("Current request:\n" + bounded(message.text, bytes: 1_200))
-    }
-    let toolEvents = events.compactMap { event -> String? in
+private func toolDecisionContext(_ events: [NormalizedEvent]) -> String {
+    let recent = events.suffix(8).map { event -> String in
         switch event {
+        case .message(let message):
+            return "[\(message.role.rawValue)] " + boundedDecisionText(message.text)
         case .toolCall(let call):
-            return "Tool call \(call.callID): \(call.name)(\(bounded(call.arguments, bytes: 600)))"
+            return "[tool_call name=\(call.name) id=\(call.callID)] " + boundedDecisionText(call.arguments)
         case .toolOutput(let output):
-            return "Tool output \(output.callID):\n\(boundedHeadAndTail(output.output, bytes: 2_400))"
-        case .message:
-            return nil
+            return "[tool_result id=\(output.callID)] " + boundedDecisionText(output.output)
         }
     }
-    lines.append(contentsOf: toolEvents.suffix(6))
-    return lines.joined(separator: "\n\n")
+    return recent.joined(separator: "\n")
 }
 
-private func shouldFinalizeAfterToolOutput(_ events: [NormalizedEvent]) -> Bool {
-    guard let request = events.compactMap({ event -> String? in
-        if case .message(let message) = event, message.role == .user { return message.text }
-        return nil
-    }).last?.lowercased(),
-    let output = events.compactMap({ event -> String? in
-        if case .toolOutput(let output) = event { return output.output }
-        return nil
-    }).last,
-    output.contains("Process exited with code 0") else {
-        return false
-    }
-
-    let readOnlyMarkers = ["inspect", "read", "show", "list", "find", "summarize", "explain", "確認", "読む", "表示", "一覧", "要約"]
-    let mutationMarkers = ["edit", "change", "fix", "implement", "create", "write", "delete", "rename", "test", "build", "編集", "変更", "修正", "実装", "作成", "削除", "テスト", "ビルド"]
-    return readOnlyMarkers.contains { request.contains($0) }
-        && !mutationMarkers.contains { request.contains($0) }
-}
-
-private func directToolResultAnswer(_ events: [NormalizedEvent]) -> String? {
-    guard let request = events.compactMap({ event -> String? in
-        if case .message(let message) = event, message.role == .user { return message.text }
-        return nil
-    }).last,
-    let output = events.compactMap({ event -> String? in
-        if case .toolOutput(let output) = event { return output.output }
-        return nil
-    }).last,
-    output.contains("Process exited with code 0") else {
-        return nil
-    }
-
-    let lower = request.lowercased()
-    if lower.contains("swift package name") || lower.contains("package name") || request.contains("パッケージ名") {
-        let pattern = #"\bname\s*:\s*\"([^\"]+)\""#
-        if let regex = try? NSRegularExpression(pattern: pattern),
-           let match = regex.firstMatch(in: output, range: NSRange(output.startIndex..., in: output)),
-           let range = Range(match.range(at: 1), in: output) {
-            return String(output[range])
-        }
-    }
-    if (lower.contains("basename") || request.contains("末尾")),
-       let pathLine = output.split(separator: "\n").last(where: { $0.hasPrefix("/") }) {
-        return URL(fileURLWithPath: String(pathLine)).lastPathComponent
-    }
-    if lower.contains("reply done") || request.contains("完了") {
-        return "done"
-    }
-    return nil
-}
-
-private func bounded(_ value: String, bytes: Int) -> String {
-    guard value.utf8.count > bytes else { return value }
-    return "[earlier content omitted]\n" + String(decoding: value.utf8.suffix(bytes), as: UTF8.self)
-}
-
-private func boundedHeadAndTail(_ value: String, bytes: Int) -> String {
-    guard value.utf8.count > bytes else { return value }
-    let head = (bytes * 2) / 3
-    let tail = bytes - head
-    return String(decoding: value.utf8.prefix(head), as: UTF8.self)
-        + "\n[...middle content omitted...]\n"
-        + String(decoding: value.utf8.suffix(tail), as: UTF8.self)
+private func boundedDecisionText(_ text: String) -> String {
+    let limit = 1_200
+    guard text.utf8.count > limit else { return text }
+    let half = limit / 2
+    return String(decoding: text.utf8.prefix(half), as: UTF8.self)
+        + "\n[...omitted...]\n"
+        + String(decoding: text.utf8.suffix(half), as: UTF8.self)
 }
 
 /// Encode diagnostics into a response header for debug builds.

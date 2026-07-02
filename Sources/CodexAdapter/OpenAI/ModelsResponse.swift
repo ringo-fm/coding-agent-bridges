@@ -48,6 +48,18 @@ public struct ModelsList: Codable, Sendable, Equatable {
             CodexModelInfo.appleFoundationStructured
         ]
     )
+
+    public static func runtime(contextSize: Int) -> ModelsList {
+        var value = Self.default
+        let compactLimit = max(1, contextSize * 3 / 4)
+        for index in value.models.indices {
+            value.models[index].context_window = contextSize
+            value.models[index].max_context_window = contextSize
+            value.models[index].auto_compact_token_limit = compactLimit
+            value.models[index].truncation_policy = .init(mode: "tokens", limit: contextSize)
+        }
+        return value
+    }
 }
 
 /// OpenAI-standard model object (for the `data` array).

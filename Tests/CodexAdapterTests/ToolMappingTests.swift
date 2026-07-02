@@ -237,23 +237,6 @@ struct ToolMappingTests {
         guard case .toolOutput = normalized.events[2] else { Issue.record("third event must be tool output"); return }
     }
 
-    @Test("Tool loop stops at the step limit and after two canonical duplicate calls")
-    func toolLoopLimits() {
-        #expect(CodexToolLoopPolicy.stopReason(stepCount: 6, maxSteps: 6) != nil)
-        #expect(CodexToolLoopPolicy.stopReason(stepCount: 5, maxSteps: 6) == nil)
-
-        let prior = [
-            CapturedToolCall(name: "exec_command", argumentsJSON: #"{"cmd":"pwd","yield_time_ms":1000}"#),
-            CapturedToolCall(name: "exec_command", argumentsJSON: #"{"yield_time_ms":1000,"cmd":"pwd"}"#)
-        ]
-        let proposed = CapturedToolCall(
-            name: "exec_command", argumentsJSON: #"{ "cmd": "pwd", "yield_time_ms": 1000 }"#
-        )
-        #expect(CodexToolLoopPolicy.stopReason(
-            stepCount: 2, maxSteps: 6, proposed: proposed, priorCalls: prior
-        ) != nil)
-    }
-
     @Test("InputNormalizer ignores function_call items when function-call disabled")
     func normalizeFunctionCallDisabled() {
         let request = ResponsesCreateRequest(

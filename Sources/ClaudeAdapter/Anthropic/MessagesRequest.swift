@@ -1,4 +1,5 @@
 import Foundation
+import AgentBridgeCore
 
 struct MessagesRequest: Decodable {
     let model: String
@@ -9,7 +10,7 @@ struct MessagesRequest: Decodable {
     let temperature: Double?
     let topP: Double?
     let tools: [ToolDefinition]?
-    let toolChoicePresent: Bool
+    let toolChoice: ClaudeToolChoice?
     let thinkingPresent: Bool
 
     enum CodingKeys: String, CodingKey {
@@ -35,12 +36,27 @@ struct MessagesRequest: Decodable {
         self.temperature = try c.decodeIfPresent(Double.self, forKey: .temperature)
         self.topP = try c.decodeIfPresent(Double.self, forKey: .topP)
         self.tools = try c.decodeIfPresent([ToolDefinition].self, forKey: .tools)
-        self.toolChoicePresent = c.contains(.toolChoice)
+        self.toolChoice = try c.decodeIfPresent(ClaudeToolChoice.self, forKey: .toolChoice)
         self.thinkingPresent = c.contains(.thinking)
     }
 
     var toolsPresent: Bool { tools != nil }
     var hasTools: Bool { !(tools?.isEmpty ?? true) }
+    var toolChoicePresent: Bool { toolChoice != nil }
+}
+
+struct ClaudeToolChoice: Decodable {
+    let type: String
+    let name: String?
+
+    var agentChoice: AgentToolChoice {
+        switch type {
+        case "none": .none
+        case "any": .required
+        case "tool": name.map(AgentToolChoice.tool) ?? .required
+        default: .auto
+        }
+    }
 }
 
 enum SystemPrompt: Decodable {
@@ -205,4 +221,3 @@ struct AnyDecodable: Decodable {
         else { self.value = NSNull() }
     }
 }
-

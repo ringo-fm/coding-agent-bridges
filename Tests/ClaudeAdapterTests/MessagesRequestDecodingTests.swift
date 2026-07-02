@@ -58,8 +58,15 @@ import Foundation
         let req = try JSONDecoder().decode(MessagesRequest.self, from: json)
         #expect(req.toolsPresent == true)
         #expect(req.toolChoicePresent == true)
+        #expect(req.toolChoice?.agentChoice == .auto)
         #expect(req.thinkingPresent == true)
         #expect(req.messages[0].content.allText == "hi")
+    }
+
+    @Test func decodesRequiredNamedToolChoice() throws {
+        let json = Data(#"{"model":"claude-afm-local","messages":[{"role":"user","content":"read it"}],"tool_choice":{"type":"tool","name":"Read"}}"#.utf8)
+        let req = try JSONDecoder().decode(MessagesRequest.self, from: json)
+        #expect(req.toolChoice?.agentChoice == .tool("Read"))
     }
 
     @Test func decodesToolUseAssistantTurn() throws {
@@ -85,4 +92,3 @@ import Foundation
         #expect(t == "reasoning here")
     }
 }
-

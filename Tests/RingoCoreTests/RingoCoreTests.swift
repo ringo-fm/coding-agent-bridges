@@ -38,6 +38,7 @@ import HTTPTypes
         #expect(invocation.arguments.contains("web_search=\"disabled\""))
         #expect(invocation.environment["AFM_BRIDGE_API_KEY"] == "ringo-local")
         #expect(invocation.environment["CODEX_HOME"] == RingoRuntime.defaultCodexHome)
+        #expect(invocation.arguments.contains("features.plugins=false"))
     }
 
     @Test func codexCanInheritUserConfiguration() throws {
@@ -51,6 +52,18 @@ import HTTPTypes
             inheritCodexConfig: true
         )
         #expect(invocation.environment["CODEX_HOME"] == "/tmp/existing-codex")
+        #expect(!invocation.arguments.contains("features.plugins=false"))
+    }
+
+    @Test func codexOverridesScaleWithRuntimeContext() {
+        let overrides = RingoRuntime.codexOverrides(
+            baseURL: "http://127.0.0.1:9002/v1",
+            model: "apple-foundation-local",
+            contextSize: 8_192
+        )
+        #expect(overrides.contains("model_context_window=8192"))
+        #expect(overrides.contains("model_auto_compact_token_limit=6144"))
+        #expect(overrides.contains("tool_output_token_limit=2048"))
     }
 
     @Test func codexExecSkipsGitCheckOnlyOutsideRepositories() throws {

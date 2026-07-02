@@ -92,7 +92,7 @@ public enum RingoRuntime {
         codexHome: String? = nil,
         workingDirectory: String = FileManager.default.currentDirectoryPath
     ) throws -> ChildInvocation {
-        let path = try executable ?? resolveExecutable(agent.rawValue, environment: inheritedEnvironment)
+        let path = try executable ?? resolveRunnableExecutable(agent.rawValue, environment: inheritedEnvironment)
         var childArguments = arguments.first == "--" ? Array(arguments.dropFirst()) : arguments
         var environment = inheritedEnvironment
         let gatewayURL = "http://\(host):\(port)"
@@ -139,8 +139,11 @@ public enum RingoRuntime {
     public static func codexOverrides(
         baseURL: String,
         model: String,
-        modelCatalogPath: String? = nil
+        modelCatalogPath: String? = nil,
+        contextSize: Int = FoundationModelsBackend().contextSize
     ) -> [String] {
+        let compactLimit = max(1, contextSize * 3 / 4)
+        let toolOutputLimit = max(1, contextSize / 4)
         var overrides = [
             "-c", "model=\"\(model)\"",
             "-c", "model_provider=\"ringo\"",
@@ -155,12 +158,23 @@ public enum RingoRuntime {
             "-c", "personality=\"none\"",
             "-c", "features.personality=false",
             "-c", "web_search=\"disabled\"",
-            "-c", "model_context_window=4096",
-            "-c", "model_auto_compact_token_limit=3072",
-            "-c", "tool_output_token_limit=1024",
+            "-c", "model_context_window=\(contextSize)",
+            "-c", "model_auto_compact_token_limit=\(compactLimit)",
+            "-c", "tool_output_token_limit=\(toolOutputLimit)",
         ]
         if let modelCatalogPath {
-            overrides += ["-c", "model_catalog_json=\"\(modelCatalogPath)\""]
+            overrides += [
+                "-c", "model_catalog_json=\"\(modelCatalogPath)\"",
+                "-c", "features.plugins=false",
+                "-c", "features.apps=false",
+                "-c", "features.browser_use=false",
+                "-c", "features.browser_use_external=false",
+                "-c", "features.computer_use=false",
+                "-c", "features.image_generation=false",
+                "-c", "features.in_app_browser=false",
+                "-c", "features.multi_agent=false",
+                "-c", "features.workspace_dependencies=false",
+            ]
         }
         return overrides
     }
@@ -173,7 +187,7 @@ public enum RingoRuntime {
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(ModelsList.default).write(
+        try encoder.encode(ModelsList.runtime(contextSize: FoundationModelsBackend().contextSize)).write(
             to: directory.appendingPathComponent("models.json"),
             options: .atomic
         )
@@ -289,6 +303,39 @@ public enum RingoRuntime {
             if FileManager.default.isExecutableFile(atPath: candidate) { return candidate }
         }
         throw RingoError.executableNotFound(name)
+    }
+
+    public static func resolveRunnableExecutable(
+        _ name: String,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) throws -> String {
+        var candidates: [String] = []
+        if let path = try? resolveExecutable(name, environment: environment) { candidates.append(path) }
+        if name == "codex" {
+            candidates.append("/Applications/Codex.app/Contents/Resources/codex")
+        }
+        for candidate in candidates where FileManager.default.isExecutableFile(atPath: candidate) {
+            if (try? executableVersion(candidate, environment: environment)) != nil { return candidate }
+        }
+        throw RingoError.executableNotFound(name)
+    }
+
+    public static func executableVersion(
+        _ path: String,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) throws -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = ["--version"]
+        process.environment = environment
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = output
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { throw RingoError.executableNotFound(path) }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? path
     }
 
     public static func availablePort() throws -> Int {
@@ -545,18 +592,25 @@ public enum RingoDoctor {
         )]
         for executable in ["swift", "xcodebuild", "claude", "codex"] {
             do {
+                let path = try RingoRuntime.resolveRunnableExecutable(executable, environment: environment)
+                let version = try RingoRuntime.executableVersion(path, environment: environment)
                 result.append(DoctorCheck(
                     name: executable,
                     passed: true,
-                    detail: try RingoRuntime.resolveExecutable(executable, environment: environment)
+                    detail: "\(version) (\(path))"
                 ))
             } catch {
                 result.append(DoctorCheck(name: executable, passed: false, detail: "not found on PATH"))
             }
         }
-        switch FoundationModelsBackend().status() {
+        let backend = FoundationModelsBackend()
+        switch backend.status() {
         case .available:
-            result.append(DoctorCheck(name: "Apple Foundation Models", passed: true, detail: "available"))
+            result.append(DoctorCheck(
+                name: "Apple Foundation Models",
+                passed: true,
+                detail: "available; context=\(backend.capabilities.contextSize); exact-token-counting=\(backend.capabilities.exactTokenCounting)"
+            ))
         case .unavailable(let reason):
             result.append(DoctorCheck(name: "Apple Foundation Models", passed: false, detail: reason))
         }

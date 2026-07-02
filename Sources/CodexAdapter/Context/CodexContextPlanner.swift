@@ -46,7 +46,7 @@ enum CodexContextPlanner {
         candidates.append(contentsOf: current)
 
         let query = current.last(where: { $0.kind == .currentRequest })?.text ?? ""
-        if !query.isEmpty {
+        if request.previous_response_id != nil, !query.isEmpty {
             let retrieved = try await ledger.searchArtifacts(query: query, limit: 4)
             candidates.append(contentsOf: retrieved.map {
                 ContextSegment(

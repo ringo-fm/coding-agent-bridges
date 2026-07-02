@@ -19,19 +19,6 @@ enum ClaudeContextPlanner {
         ledger: any ContextLedger
     ) async throws -> PreparedClaudeContext {
         var segments = makeSegments(request)
-        let query = segments.last(where: { $0.kind == .currentRequest })?.text ?? ""
-        if !query.isEmpty {
-            let retrieved = try await ledger.searchArtifacts(query: query, limit: 4)
-            segments.append(contentsOf: retrieved.map {
-                ContextSegment(
-                    id: "retrieved-\($0.hash)",
-                    kind: .retrievedSource,
-                    text: "[retrieved source]\n\($0.text)",
-                    metadata: $0.metadata
-                )
-            })
-        }
-
         let turnHashes = request.turns.map { ConversationFingerprint.digest(render($0)) }
         let toolCatalog = request.tools?.map(\.summary).joined(separator: "\n") ?? ""
         let baseFingerprint = ConversationFingerprint.conversationKey(
@@ -44,6 +31,18 @@ enum ClaudeContextPlanner {
         let continuation = previous.map {
             ConversationFingerprint.isAppendOnly(previous: $0.turnHashes, current: turnHashes)
         } ?? false
+        let query = segments.last(where: { $0.kind == .currentRequest })?.text ?? ""
+        if continuation, !query.isEmpty {
+            let retrieved = try await ledger.searchArtifacts(query: query, limit: 4)
+            segments.append(contentsOf: retrieved.map {
+                ContextSegment(
+                    id: "retrieved-\($0.hash)",
+                    kind: .retrievedSource,
+                    text: "[retrieved source]\n\($0.text)",
+                    metadata: $0.metadata
+                )
+            })
+        }
         let conversation = ConversationRecord(
             id: continuation ? previous!.id : UUID().uuidString,
             protocolName: "claude",

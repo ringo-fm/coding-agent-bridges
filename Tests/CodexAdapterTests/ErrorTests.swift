@@ -77,6 +77,14 @@ struct ErrorTests {
         #expect(json.contains("\"models\""))
     }
 
+    @Test("ModelsList runtime metadata follows the detected context size")
+    func modelsListRuntimeContext() {
+        let list = ModelsList.runtime(contextSize: 8_192)
+        #expect(list.models.allSatisfy { $0.context_window == 8_192 })
+        #expect(list.models.allSatisfy { $0.auto_compact_token_limit == 6_144 })
+        #expect(list.models.allSatisfy { $0.truncation_policy.limit == 8_192 })
+    }
+
     @Test("CompatibilityProfile.codexMinimal is text-only")
     func codexMinimalProfile() {
         let profile = CompatibilityProfile.codexMinimal
@@ -108,4 +116,3 @@ struct ErrorTests {
         #expect(Diagnostics().isEmpty)
     }
 }
-

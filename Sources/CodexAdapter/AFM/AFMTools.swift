@@ -1,6 +1,7 @@
 import Foundation
 import FoundationModels
 import Synchronization
+import AgentBridgeCore
 
 /// A captured tool call from AFM. Each entry records the tool name and the
 /// arguments as a JSON string (extracted from `GeneratedContent`).
@@ -97,6 +98,16 @@ public final class BridgedToolRegistry: @unchecked Sendable {
 
     public var names: [String] { tools.map(\.name) }
 
+    public var agentDefinitions: [AgentToolDefinition] {
+        tools.map {
+            AgentToolDefinition(
+                name: $0.name,
+                description: $0.description,
+                inputSchemaJSON: $0.schemaDescription
+            )
+        }
+    }
+
     public var selectedToolInstructions: String? {
         guard let tool = tools.first, tools.count == 1 else { return nil }
         return """
@@ -117,9 +128,7 @@ public final class BridgedToolRegistry: @unchecked Sendable {
     }
 }
 
-/// Small, text-only tool surface used by the AFM launcher. Image and broad
-/// external tool catalogs are intentionally excluded from the default 4096
-/// token context.
+/// Optional small, text-only tool surface for explicitly isolated launches.
 public let codexAFMCoreToolNames: Set<String> = [
     "exec_command", "write_stdin", "apply_patch", "request_user_input"
 ]

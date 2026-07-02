@@ -52,6 +52,7 @@ func handleMessages(
     }
     let options = GenerationOptionsMapper.map(maxTokens: normalized.maxTokens, temperature: normalized.temperature)
     let useStructured = normalized.hasTools
+    let decisionContext = TranscriptBuilder.decisionContext(from: normalized)
 
     if normalized.stream {
         return Response(status: .ok, headers: sseHeaders(), body: .init { writer in
@@ -61,7 +62,7 @@ func handleMessages(
             try await writer.write(SSEWriter.event("message_start", payload: MessageStartEvent(id: messageID, model: normalized.model, inputTokens: 0), allocator: allocator))
 
             if useStructured {
-                try await streamStructured(afm: afm, model: normalized.model, tools: normalized.tools ?? [], instructions: instructions, conversation: conversation, options: options, writer: &writer, allocator: allocator)
+                try await streamStructured(afm: afm, model: normalized.model, tools: normalized.tools ?? [], instructions: instructions, conversation: conversation, options: options, toolChoice: normalized.toolChoice, decisionContext: decisionContext, writer: &writer, allocator: allocator)
             } else {
                 try await streamText(afm: afm, model: normalized.model, instructions: instructions, conversation: conversation, options: options, writer: &writer, allocator: allocator)
             }
@@ -76,7 +77,9 @@ func handleMessages(
                 instructions: instructions,
                 conversation: conversation,
                 tools: normalized.tools ?? [],
-                options: options
+                options: options,
+                toolChoice: normalized.toolChoice,
+                decisionContext: decisionContext
             )
             if result.hasToolCall, let name = result.toolName {
                 let (parsed, validationError) = ToolMapper.validateGeneratedToolCall(
@@ -187,6 +190,8 @@ private func streamText(
 
 private func streamStructured(
     afm: AFMRuntime, model: String, tools: [ToolDefinition], instructions: String, conversation: String, options: GenerationOptions,
+    toolChoice: AgentToolChoice,
+    decisionContext: String,
     writer: inout any ResponseBodyWriter, allocator: ByteBufferAllocator
 ) async throws {
     do {
@@ -194,7 +199,9 @@ private func streamStructured(
             instructions: instructions,
             conversation: conversation,
             tools: tools,
-            options: options
+            options: options,
+            toolChoice: toolChoice,
+            decisionContext: decisionContext
         )
         let lastText = result.text ?? ""
         let toolName = result.toolName

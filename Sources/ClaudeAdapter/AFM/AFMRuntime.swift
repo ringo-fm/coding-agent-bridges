@@ -70,69 +70,32 @@ final class AFMRuntime: Sendable {
         instructions: String,
         conversation: String,
         tools: [ToolDefinition],
-        options: GenerationOptions
+        options: GenerationOptions,
+        toolChoice: AgentToolChoice = .auto,
+        decisionContext: String? = nil
     ) async throws -> StructuredResult {
-        let catalog = ToolMapper.buildCompactToolCatalog(tools: tools)
-        let routingInstructions = instructions + "\n\n" + catalog
-        let routingSession = newSession(instructions: routingInstructions)
-        let routing = try await routingSession.respond(
-            to: conversation,
-            generating: ToolRoutingDecision.self,
-            options: options
-        ).content
-
-        let text = Self.normalizedOptional(routing.text)
-        let toolName = Self.normalizedOptional(routing.toolName)
-        var toolArgs = "{}"
-        var argumentPrompt = ""
-        if let toolName, let selected = tools.first(where: { $0.name == toolName }) {
-            let selectedPrompt = ToolMapper.buildSelectedToolPrompt(selected)
-            argumentPrompt = conversation + "\n\nGenerate arguments for the selected tool '\(toolName)'."
-            var retryFeedback = ""
-            for attempt in 0..<3 {
-                let argumentSession = newSession(instructions: instructions + "\n\n" + selectedPrompt)
-                let candidate = try await argumentSession.respond(
-                    to: argumentPrompt + retryFeedback,
-                    generating: SelectedToolArguments.self,
-                    options: options
-                ).content.arguments
-                let (parsed, validationError) = ToolMapper.validateGeneratedToolCall(
-                        name: toolName,
-                        argumentsJSON: candidate,
-                        against: tools
-                    )
-                if parsed != nil {
-                    toolArgs = candidate
-                    break
-                } else {
-                    guard attempt < 2 else {
-                        throw NSError(
-                            domain: "ClaudeAdapter.ToolArguments",
-                            code: 1,
-                            userInfo: [NSLocalizedDescriptionKey: validationError]
-                        )
-                    }
-                    retryFeedback = "\n\nThe previous arguments were invalid: \(validationError) Return only a valid JSON object matching the schema."
-                }
-            }
-        }
-
-        let inputTokens = await TokenCounter.countInput(
-            model: model,
-            system: routingInstructions,
-            conversation: conversation + argumentPrompt
-        )
-        let outputDesc = [text, toolName, toolArgs].compactMap { $0 }.joined(separator: " ")
-        let outputTokens = await TokenCounter.countOutput(model: model, text: outputDesc)
-        let stopReason = toolName != nil ? "tool_use" : "end_turn"
+        let result = try await sharedBackend.generate(AgentGenerationRequest(
+            model: ModelRegistry.primaryModel,
+            messages: [
+                AgentMessage(role: .system, text: instructions),
+                AgentMessage(role: .user, text: conversation),
+            ],
+            tools: tools.map(\.agentDefinition),
+            maximumOutputTokens: options.maximumResponseTokens,
+            temperature: options.temperature,
+            decisionContext: decisionContext,
+            toolChoice: toolChoice,
+            executionStrategy: .adaptive
+        ))
+        let call = result.toolCalls.first
 
         return StructuredResult(
-            text: text,
-            toolName: toolName,
-            toolArguments: toolArgs,
-            inputTokens: inputTokens,
-            outputTokens: outputTokens,
-            stopReason: stopReason
+            text: Self.normalizedOptional(result.text),
+            toolName: call?.name,
+            toolArguments: call?.argumentsJSON ?? "{}",
+            inputTokens: result.inputTokens ?? 0,
+            outputTokens: result.outputTokens ?? 0,
+            stopReason: call == nil ? "end_turn" : "tool_use"
         )
     }
 

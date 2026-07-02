@@ -1,6 +1,7 @@
 import Foundation
+import AgentBridgeCore
 
-struct ToolDefinition: Decodable {
+struct ToolDefinition: Codable, Sendable {
     let name: String
     let description: String?
     let inputSchema: ToolInputSchema?
@@ -53,17 +54,65 @@ struct ToolDefinition: Decodable {
         lines.append("Return only a JSON object in the arguments field. Do not call or execute the tool.")
         return lines.joined(separator: "\n")
     }
+
+    var agentDefinition: AgentToolDefinition {
+        let schema = inputSchema.flatMap { try? JSONEncoder().encode($0) }
+            .flatMap { String(data: $0, encoding: .utf8) }
+            ?? #"{"type":"object","properties":{}}"#
+        return AgentToolDefinition(
+            name: name,
+            description: description ?? "Tool: \(name)",
+            inputSchemaJSON: schema
+        )
+    }
 }
 
-struct ToolInputSchema: Decodable {
+struct ToolInputSchema: Codable, Sendable {
     let type: String?
     let properties: [String: ToolProperty]?
     let required: [String]?
 }
 
-struct ToolProperty: Decodable {
+struct ToolProperty: Codable, Sendable {
     let type: String?
     let description: String?
+    let properties: [String: ToolProperty]?
+    let required: [String]?
+    let items: ToolPropertyBox?
+    let enumValues: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case type, description, properties, required, items
+        case enumValues = "enum"
+    }
+
+    init(
+        type: String?,
+        description: String?,
+        properties: [String: ToolProperty]? = nil,
+        required: [String]? = nil,
+        items: ToolProperty? = nil,
+        enumValues: [String]? = nil
+    ) {
+        self.type = type
+        self.description = description
+        self.properties = properties
+        self.required = required
+        self.items = items.map(ToolPropertyBox.init)
+        self.enumValues = enumValues
+    }
+}
+
+final class ToolPropertyBox: Codable, @unchecked Sendable {
+    let value: ToolProperty
+    init(_ value: ToolProperty) { self.value = value }
+    required init(from decoder: Decoder) throws {
+        value = try decoder.singleValueContainer().decode(ToolProperty.self)
+    }
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(value)
+    }
 }
 
 struct ToolDefinitions: Decodable {

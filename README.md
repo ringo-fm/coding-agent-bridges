@@ -43,15 +43,18 @@ install -m 755 .build/release/ringo "$HOME/.local/bin/ringo"
 ringo doctor
 ```
 
-`ringo codex` uses a small AFM-specific Codex home by default, disables web
-search and personality instructions, advertises a 4,096-token context window,
-and starts the bridge with persistent local context:
+`ringo codex` preserves the normal Codex home, including repository guidance,
+skills, plugins, and MCP configuration. The bridge stages the tools relevant to
+each request, disables hosted web search and personality instructions, reports
+the context window detected from AFM at runtime, and uses persistent local
+context by default:
 
 ```bash
 ringo codex
 ringo codex -- exec --sandbox read-only "inspect Package.swift"
 ringo codex --context-mode memory
 ringo codex --context-mode off
+ringo codex --isolated-config
 ```
 
 Non-interactive `ringo codex -- exec ...` runs in concise mode by default and
@@ -62,12 +65,11 @@ events and gateway diagnostics:
 ringo codex --verbose -- exec --sandbox read-only "inspect Package.swift"
 ```
 
-Use `--inherit-user-config` when the normal Codex home, hooks, MCP configuration,
-and plugins are required. The AFM bridge still limits the default model-facing
-tool catalog to the text-based core coding tools (`exec_command`, `write_stdin`,
-`apply_patch`, and `request_user_input`) to fit the local model context.
+`--inherit-user-config` remains as a compatibility alias for the default.
+Use `--isolated-config` when an AFM-specific Codex home without user plugins or
+MCP configuration is required.
 
-The AFM-specific Codex state and bridge context are stored under:
+The optional isolated Codex state and shared bridge context are stored under:
 
 ```text
 ~/Library/Application Support/coding-agent-bridges/codex-home
@@ -218,6 +220,13 @@ CODEX_BIN=/Applications/Codex.app/Contents/Resources/codex \
 run `--version`, enforces a 180-second timeout (override with
 `E2E_TIMEOUT_SECONDS`), and preserves its temporary workspace with the Codex
 log and Git diff when the test fails.
+
+The equivalent Claude Code E2E uses the same deterministic repository task:
+
+```bash
+CLAUDE_BIN="$(command -v claude)" \
+  Tests/E2E/claude-instruction-following.sh
+```
 
 ## Status
 

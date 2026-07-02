@@ -42,6 +42,44 @@ public struct AgentToolCall: Codable, Sendable, Equatable {
     }
 }
 
+public enum AgentToolChoice: Sendable, Equatable {
+    case auto
+    case none
+    case required
+    case tool(String)
+}
+
+public enum AgentExecutionStrategy: String, Codable, Sendable, Equatable {
+    case adaptive
+    case direct
+    case staged
+}
+
+public struct AgentRuntimeCapabilities: Codable, Sendable, Equatable {
+    public let contextSize: Int
+    public let exactTokenCounting: Bool
+    public let structuredGeneration: Bool
+    public let sessionReuse: Bool
+    public let transcriptRehydration: Bool
+    public let streaming: Bool
+
+    public init(
+        contextSize: Int,
+        exactTokenCounting: Bool,
+        structuredGeneration: Bool = true,
+        sessionReuse: Bool = true,
+        transcriptRehydration: Bool = true,
+        streaming: Bool = true
+    ) {
+        self.contextSize = contextSize
+        self.exactTokenCounting = exactTokenCounting
+        self.structuredGeneration = structuredGeneration
+        self.sessionReuse = sessionReuse
+        self.transcriptRehydration = transcriptRehydration
+        self.streaming = streaming
+    }
+}
+
 public struct AgentGenerationRequest: Sendable, Equatable {
     public let model: String
     public let messages: [AgentMessage]
@@ -54,6 +92,9 @@ public struct AgentGenerationRequest: Sendable, Equatable {
     public let contextFingerprint: String?
     public let resultingContextFingerprint: String?
     public let incrementalMessages: [AgentMessage]?
+    public let decisionContext: String?
+    public let toolChoice: AgentToolChoice
+    public let executionStrategy: AgentExecutionStrategy
 
     public init(
         model: String,
@@ -66,7 +107,10 @@ public struct AgentGenerationRequest: Sendable, Equatable {
         conversationKey: String? = nil,
         contextFingerprint: String? = nil,
         resultingContextFingerprint: String? = nil,
-        incrementalMessages: [AgentMessage]? = nil
+        incrementalMessages: [AgentMessage]? = nil,
+        decisionContext: String? = nil,
+        toolChoice: AgentToolChoice = .auto,
+        executionStrategy: AgentExecutionStrategy = .adaptive
     ) {
         self.model = model
         self.messages = messages
@@ -79,6 +123,9 @@ public struct AgentGenerationRequest: Sendable, Equatable {
         self.contextFingerprint = contextFingerprint
         self.resultingContextFingerprint = resultingContextFingerprint
         self.incrementalMessages = incrementalMessages
+        self.decisionContext = decisionContext
+        self.toolChoice = toolChoice
+        self.executionStrategy = executionStrategy
     }
 }
 

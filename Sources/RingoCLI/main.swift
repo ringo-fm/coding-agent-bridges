@@ -13,14 +13,18 @@ struct Ringo: AsyncParsableCommand {
 
     struct Claude: AsyncParsableCommand {
         static let configuration = CommandConfiguration(abstract: "Launch Claude Code through the local bridge.")
+        @Option(help: "Bridge context storage: persistent, memory, or off.")
+        var contextMode = "persistent"
         @Argument(parsing: .captureForPassthrough) var arguments: [String] = []
-        func run() async throws { try await launch(.claude, arguments: arguments) }
+        func run() async throws { try await launch(.claude, arguments: arguments, contextMode: contextMode) }
     }
 
     struct Codex: AsyncParsableCommand {
         static let configuration = CommandConfiguration(abstract: "Launch Codex through the local bridge.")
         @Flag(help: "Use the normal Codex home and user configuration instead of the AFM-specific home.")
         var inheritUserConfig = false
+        @Flag(help: "Use an isolated AFM-specific Codex home without user plugins or MCP configuration.")
+        var isolatedConfig = false
         @Option(help: "Bridge context storage: persistent, memory, or off.")
         var contextMode = "persistent"
         @Flag(help: "Show Codex JSON-independent diagnostics and gateway logs.")
@@ -30,7 +34,7 @@ struct Ringo: AsyncParsableCommand {
             try await launch(
                 .codex,
                 arguments: arguments,
-                inheritCodexConfig: inheritUserConfig,
+                inheritCodexConfig: inheritUserConfig || !isolatedConfig,
                 contextMode: contextMode,
                 verbose: verbose
             )
@@ -157,7 +161,7 @@ private func launch(
     let config = try RingoRuntime.gatewayConfiguration(
         host: "127.0.0.1",
         port: port,
-        contextMode: contextMode ?? "memory",
+        contextMode: contextMode ?? "persistent",
         verbose: verbose
     )
     let server = Task { try await RingoRuntime.runGateway(config: config) }

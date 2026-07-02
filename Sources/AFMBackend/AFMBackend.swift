@@ -4,6 +4,7 @@ import FoundationModels
 
 public protocol AgentModelBackend: Sendable {
     var contextSize: Int { get }
+    var capabilities: AgentRuntimeCapabilities { get }
     func status() -> AFMBackendStatus
     func countTokens(_ text: String) async -> Int
     func generate(_ request: AgentGenerationRequest) async throws -> AgentGenerationResult
@@ -25,6 +26,15 @@ public final class FoundationModelsBackend: AgentModelBackend, Sendable {
     }
 
     public var contextSize: Int { model.contextSize }
+
+    public var capabilities: AgentRuntimeCapabilities {
+        let exactTokenCounting: Bool
+        if #available(macOS 26.4, *) { exactTokenCounting = true } else { exactTokenCounting = false }
+        return AgentRuntimeCapabilities(
+            contextSize: model.contextSize,
+            exactTokenCounting: exactTokenCounting
+        )
+    }
 
     public func status() -> AFMBackendStatus {
         switch model.availability {
@@ -56,6 +66,24 @@ public final class FoundationModelsBackend: AgentModelBackend, Sendable {
         let components = Self.render(request.messages)
         do {
             try Task.checkCancellation()
+            if !request.tools.isEmpty, request.toolChoice != .none {
+                var result = try await AFMToolExecution.generate(
+                    model: model,
+                    request: request,
+                    instructions: components.instructions,
+                    prompt: components.prompt,
+                    options: Self.options(request)
+                )
+                let inputTokens = await countTokens(components.instructions + "\n\n" + components.prompt)
+                let outputTokens = await countTokens(result.text + result.toolCalls.map(\.argumentsJSON).joined())
+                result = AgentGenerationResult(
+                    text: result.text,
+                    toolCalls: result.toolCalls,
+                    inputTokens: inputTokens,
+                    outputTokens: outputTokens
+                )
+                return result
+            }
             let text: String
             if let key = request.conversationKey {
                 let incremental = request.incrementalMessages.map(Self.render)?.prompt
@@ -93,6 +121,22 @@ public final class FoundationModelsBackend: AgentModelBackend, Sendable {
         _ request: AgentGenerationRequest
     ) async throws -> AsyncThrowingStream<AgentStreamEvent, Error> {
         try requireAvailable()
+        if !request.tools.isEmpty, request.toolChoice != .none {
+            return AsyncThrowingStream { continuation in
+                let task = Task {
+                    do {
+                        let result = try await self.generate(request)
+                        for call in result.toolCalls { continuation.yield(.toolCall(call)) }
+                        if !result.text.isEmpty { continuation.yield(.textDelta(result.text)) }
+                        continuation.yield(.completed(result))
+                        continuation.finish()
+                    } catch {
+                        continuation.finish(throwing: error)
+                    }
+                }
+                continuation.onTermination = { _ in task.cancel() }
+            }
+        }
         let components = Self.render(request.messages)
         let session = Self.session(model: model, instructions: components.instructions)
         let responseStream = session.streamResponse(to: components.prompt, options: Self.options(request))

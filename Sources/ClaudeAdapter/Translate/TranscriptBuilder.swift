@@ -53,5 +53,27 @@ enum TranscriptBuilder {
         }
         return s
     }
-}
 
+    static func decisionContext(from n: NormalizedRequest) -> String {
+        n.turns.suffix(4).flatMap { turn in
+            turn.blocks.map { block -> String in
+                switch block.kind {
+                case .text(let text): return "[\(turn.role)] " + boundedDecisionText(text)
+                case .toolResult(let result): return "[tool_result id=\(result.toolUseId) error=\(result.isError)] " + boundedDecisionText(result.content)
+                case .toolUse(let name, let id, let input): return "[tool_call name=\(name ?? "unknown") id=\(id ?? "unknown")] " + boundedDecisionText(input ?? "{}")
+                case .thinking: return "[assistant thinking omitted]"
+                case .unsupported(let type): return "[unsupported type=\(type)]"
+                }
+            }
+        }.joined(separator: "\n")
+    }
+
+    private static func boundedDecisionText(_ text: String) -> String {
+        let limit = 1_200
+        guard text.utf8.count > limit else { return text }
+        let half = limit / 2
+        return String(decoding: text.utf8.prefix(half), as: UTF8.self)
+            + "\n[...omitted...]\n"
+            + String(decoding: text.utf8.suffix(half), as: UTF8.self)
+    }
+}

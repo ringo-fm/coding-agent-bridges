@@ -91,12 +91,19 @@ git -C "$fixture_repo" \
     commit -qm 'Create instruction-following fixture'
 
 cd "$repo_root"
-if ! swift build --product ringo >>"$log" 2>&1; then
-    printf 'Failed to build the ringo executable.\n' >&2
-    exit 1
+ringo_bin="${RINGO_BIN:-}"
+if test -z "$ringo_bin"; then
+    if ! swift build --product ringo >>"$log" 2>&1; then
+        printf 'Failed to build the ringo executable.\n' >&2
+        exit 1
+    fi
+    bin_path="$(swift build --show-bin-path)"
+    ringo_bin="$bin_path/ringo"
 fi
-bin_path="$(swift build --show-bin-path)"
-ringo_bin="$bin_path/ringo"
+if ! test -x "$ringo_bin"; then
+    printf 'RINGO_BIN does not name an executable: %s\n' "$ringo_bin" >&2
+    exit 2
+fi
 shim_dir="$work_root/bin"
 mkdir -p "$shim_dir"
 ln -s "$codex_bin" "$shim_dir/codex"
@@ -104,9 +111,8 @@ ln -s "$codex_bin" "$shim_dir/codex"
 (
     PATH="$shim_dir:$PATH" \
     AFM_BRIDGE_PROFILE=codex-tools \
-    "$ringo_bin" codex -- exec \
+    "$ringo_bin" codex --isolated-config -- exec \
         --ephemeral \
-        --ignore-user-config \
         --sandbox workspace-write \
         --cd "$fixture_repo" \
         'Inspect the assigned inputs, then complete the task. Follow all repository instructions.'

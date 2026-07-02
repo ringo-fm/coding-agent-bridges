@@ -1,7 +1,8 @@
 import Foundation
+import AgentBridgeCore
 
-struct NormalizedBlock {
-    enum Kind {
+struct NormalizedBlock: Sendable {
+    enum Kind: Sendable {
         case text(String)
         case toolResult(ToolResultSegment)
         case toolUse(name: String?, id: String?, input: String?)
@@ -11,18 +12,18 @@ struct NormalizedBlock {
     let kind: Kind
 }
 
-struct ToolResultSegment {
+struct ToolResultSegment: Sendable {
     let toolUseId: String
     let content: String
     let isError: Bool
 }
 
-struct NormalizedTurn {
+struct NormalizedTurn: Sendable {
     let role: String
     let blocks: [NormalizedBlock]
 }
 
-struct NormalizedRequest {
+struct NormalizedRequest: Sendable {
     let model: String
     let systemText: String?
     let turns: [NormalizedTurn]
@@ -30,16 +31,40 @@ struct NormalizedRequest {
     let temperature: Double?
     let maxTokens: Int?
     let tools: [ToolDefinition]?
+    let toolChoice: AgentToolChoice
     let toolChoicePresent: Bool
     let thinkingPresent: Bool
 
     var toolsPresent: Bool { tools != nil }
     var hasTools: Bool { !(tools?.isEmpty ?? true) }
+
+    init(
+        model: String,
+        systemText: String?,
+        turns: [NormalizedTurn],
+        stream: Bool,
+        temperature: Double?,
+        maxTokens: Int?,
+        tools: [ToolDefinition]?,
+        toolChoice: AgentToolChoice = .auto,
+        toolChoicePresent: Bool,
+        thinkingPresent: Bool
+    ) {
+        self.model = model
+        self.systemText = systemText
+        self.turns = turns
+        self.stream = stream
+        self.temperature = temperature
+        self.maxTokens = maxTokens
+        self.tools = tools
+        self.toolChoice = toolChoice
+        self.toolChoicePresent = toolChoicePresent
+        self.thinkingPresent = thinkingPresent
+    }
 }
 
 enum MessageNormalizer {
     static func normalize(_ req: MessagesRequest, diagnostics: Diagnostics) -> NormalizedRequest {
-        if req.toolChoicePresent { diagnostics.ignoredField("tool_choice") }
         if req.thinkingPresent { diagnostics.ignoredField("thinking") }
 
         let turns = req.messages.map { msg -> NormalizedTurn in
@@ -54,6 +79,7 @@ enum MessageNormalizer {
             temperature: req.temperature,
             maxTokens: req.maxTokens,
             tools: req.tools,
+            toolChoice: req.toolChoice?.agentChoice ?? .auto,
             toolChoicePresent: req.toolChoicePresent,
             thinkingPresent: req.thinkingPresent
         )
@@ -74,6 +100,7 @@ enum MessageNormalizer {
             temperature: nil,
             maxTokens: nil,
             tools: nil,
+            toolChoice: .auto,
             toolChoicePresent: false,
             thinkingPresent: req.thinkingPresent
         )
@@ -99,4 +126,3 @@ enum MessageNormalizer {
         }
     }
 }
-

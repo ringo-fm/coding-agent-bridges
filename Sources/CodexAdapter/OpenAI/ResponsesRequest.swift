@@ -1,4 +1,5 @@
 import Foundation
+import AgentBridgeCore
 
 // MARK: - Top-level request
 
@@ -13,6 +14,7 @@ public struct ResponsesCreateRequest: Codable, Sendable {
     public var max_output_tokens: Int?
     public var top_p: Double?
     public var tools: [ResponsesTool]?
+    public var tool_choice: ResponsesToolChoice?
     public var reasoning: ResponsesReasoning?
     public var previous_response_id: String?
     public var store: Bool?
@@ -27,6 +29,7 @@ public struct ResponsesCreateRequest: Codable, Sendable {
         max_output_tokens: Int? = nil,
         top_p: Double? = nil,
         tools: [ResponsesTool]? = nil,
+        tool_choice: ResponsesToolChoice? = nil,
         reasoning: ResponsesReasoning? = nil,
         previous_response_id: String? = nil,
         store: Bool? = nil,
@@ -40,10 +43,54 @@ public struct ResponsesCreateRequest: Codable, Sendable {
         self.max_output_tokens = max_output_tokens
         self.top_p = top_p
         self.tools = tools
+        self.tool_choice = tool_choice
         self.reasoning = reasoning
         self.previous_response_id = previous_response_id
         self.store = store
         self.metadata = metadata
+    }
+}
+
+public enum ResponsesToolChoice: Codable, Sendable, Equatable {
+    case mode(String)
+    case tool(String)
+
+    private enum CodingKeys: String, CodingKey { case type, name }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let mode = try? container.decode(String.self) {
+            self = .mode(mode)
+            return
+        }
+        let keyed = try decoder.container(keyedBy: CodingKeys.self)
+        let type = try keyed.decodeIfPresent(String.self, forKey: .type) ?? "function"
+        if type == "none" || type == "auto" || type == "required" {
+            self = .mode(type)
+        } else {
+            self = .tool(try keyed.decode(String.self, forKey: .name))
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        switch self {
+        case .mode(let mode):
+            var container = encoder.singleValueContainer()
+            try container.encode(mode)
+        case .tool(let name):
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode("function", forKey: .type)
+            try container.encode(name, forKey: .name)
+        }
+    }
+
+    var agentChoice: AgentToolChoice {
+        switch self {
+        case .mode("none"): .none
+        case .mode("required"): .required
+        case .tool(let name): .tool(name)
+        default: .auto
+        }
     }
 }
 
@@ -183,11 +230,44 @@ public struct ResponsesToolParameters: Codable, Sendable, Equatable {
 public struct ResponsesToolParameterProperty: Codable, Sendable, Equatable {
     public var type: String?
     public var description: String?
+    public var properties: [String: ResponsesToolParameterProperty]?
+    public var required: [String]?
+    public var items: Box<ResponsesToolParameterProperty>?
+    public var enumValues: [String]?
 
-    public init(type: String? = nil, description: String? = nil) {
+    enum CodingKeys: String, CodingKey {
+        case type, description, properties, required, items
+        case enumValues = "enum"
+    }
+
+    public init(
+        type: String? = nil,
+        description: String? = nil,
+        properties: [String: ResponsesToolParameterProperty]? = nil,
+        required: [String]? = nil,
+        items: ResponsesToolParameterProperty? = nil,
+        enumValues: [String]? = nil
+    ) {
         self.type = type
         self.description = description
+        self.properties = properties
+        self.required = required
+        self.items = items.map(Box.init)
+        self.enumValues = enumValues
     }
+}
+
+public final class Box<Value: Codable & Sendable & Equatable>: Codable, @unchecked Sendable, Equatable {
+    public var value: Value
+    public init(_ value: Value) { self.value = value }
+    public required init(from decoder: Decoder) throws {
+        value = try decoder.singleValueContainer().decode(Value.self)
+    }
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(value)
+    }
+    public static func == (lhs: Box<Value>, rhs: Box<Value>) -> Bool { lhs.value == rhs.value }
 }
 
 // MARK: - Reasoning (ignored in v0)
