@@ -101,7 +101,6 @@ public enum RingoRuntime {
         switch agent {
         case .claude:
             environment["ANTHROPIC_BASE_URL"] = gatewayURL + "/anthropic"
-            environment["ANTHROPIC_AUTH_TOKEN"] = token
             environment["ANTHROPIC_API_KEY"] = token
             environment["ANTHROPIC_MODEL"] = agent.model
             environment["ANTHROPIC_SMALL_FAST_MODEL"] = agent.model
@@ -533,7 +532,7 @@ public enum RingoRuntime {
             Claude bridge is ready at \(baseURL)
 
             export ANTHROPIC_BASE_URL='\(baseURL)'
-            export ANTHROPIC_AUTH_TOKEN='\(localToken)'
+            export ANTHROPIC_API_KEY='\(localToken)'
             export ANTHROPIC_MODEL='\(agent.model)'
             """
         case .codex:
@@ -563,7 +562,7 @@ public enum RingoRuntime {
 
         Claude:
         export ANTHROPIC_BASE_URL='\(baseURL)/anthropic'
-        export ANTHROPIC_AUTH_TOKEN='\(token)'
+        export ANTHROPIC_API_KEY='\(token)'
 
         Codex:
         export AFM_BRIDGE_API_KEY='\(token)'

@@ -158,12 +158,14 @@ private func launch(
         arguments: arguments,
         inheritCodexConfig: inheritCodexConfig
     )
-    let config = try RingoRuntime.gatewayConfiguration(
+    var config = try RingoRuntime.gatewayConfiguration(
         host: "127.0.0.1",
         port: port,
         contextMode: contextMode ?? "persistent",
         verbose: verbose
     )
+    // Loopback child process: accept any bearer token so agents using OAuth tokens work
+    config.requiresAuth = false
     let server = Task { try await RingoRuntime.runGateway(config: config) }
     let status: Int32
     do {

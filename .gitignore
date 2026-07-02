@@ -4,3 +4,13 @@ DerivedData/
 *.xcodeproj
 Package.resolved
 .DS_Store
+docs/*.cast
+docs/*.mp4
+docs/demo-direct.exp
+docs/demo-expect.exp
+docs/demo-inner.exp
+docs/demo-launch.exp
+docs/demo-main.exp
+docs/test-*.gif
+docs/test-*.tape
+docs/test-*.exp

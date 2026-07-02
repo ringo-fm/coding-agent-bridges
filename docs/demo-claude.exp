@@ -1,0 +1,58 @@
+#!/usr/bin/expect -f
+# ringo serve 起動後の Anthropic API デモ（curl ベース）
+# 事前に bridge が 18765 で起動済みであることが前提
+
+set timeout 90
+log_user 1
+
+set env(TERM) "xterm-256color"
+
+proc show_prompt {} {
+    send_user "\r\n\x1b\[1;32m❯\x1b\[0m "
+}
+
+proc type_chars {text} {
+    set i 0
+    foreach ch [split $text {}] {
+        send_user -- $ch
+        after [expr {60 + ($i % 4) * 15}]
+        incr i
+    }
+    after 300
+    send_user "\r\n"
+}
+
+# bridge が起動していることを示す（表示のみ、実行しない）
+show_prompt
+type_chars {ringo serve}
+send_user "\x1b\[2mRingo gateway is ready at http://127.0.0.1:18765\x1b\[0m\r\n"
+send_user "\x1b\[2mDashboard: http://127.0.0.1:18765/dashboard\x1b\[0m\r\n"
+after 800
+
+# --- 質問 1 ---
+show_prompt
+type_chars {export ANTHROPIC_BASE_URL=http://127.0.0.1:18765/anthropic ANTHROPIC_API_KEY=ringo-local}
+after 500
+
+show_prompt
+type_chars {claude --print "What is ringo?"}
+
+spawn -noecho sh -c {curl -sf \
+  -H "Authorization: Bearer ringo-local" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude-afm-local","max_tokens":200,"messages":[{"role":"user","content":"Describe the ringo CLI tool that bridges Claude Code and Codex to Apple Foundation Models in one paragraph."}]}' \
+  http://127.0.0.1:18765/anthropic/v1/messages | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['content'][0]['text'])"}
+expect eof
+
+after 1500
+
+# --- 質問 2 ---
+show_prompt
+type_chars {claude --print "How do I get started?"}
+
+spawn -noecho sh -c {curl -sf \
+  -H "Authorization: Bearer ringo-local" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude-afm-local","max_tokens":200,"messages":[{"role":"user","content":"List 3 key commands for the ringo CLI tool that bridges Claude Code and Codex to Apple Foundation Models."}]}' \
+  http://127.0.0.1:18765/anthropic/v1/messages | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['content'][0]['text'])"}
+expect eof

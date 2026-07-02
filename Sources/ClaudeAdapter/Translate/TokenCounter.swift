@@ -3,11 +3,8 @@ import FoundationModels
 
 enum TokenCounter {
     static func heuristic(_ s: String) -> Int {
-        let bytes = s.utf8.count
-        let chars = s.count
-        let byBytes = max(1, bytes / 3)
-        let byChars = max(1, chars / 3)
-        return max(byBytes, byChars)
+        guard !s.isEmpty else { return 0 }
+        return max(1, (s.utf8.count + 2) / 3)
     }
 
     static func countInput(model: SystemLanguageModel, system: String, conversation: String) async -> Int {

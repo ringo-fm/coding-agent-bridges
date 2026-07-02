@@ -167,7 +167,7 @@ public enum ContextPlanner {
 
     public static func estimateTokens(_ text: String) -> Int {
         guard !text.isEmpty else { return 0 }
-        return max(1, (text.utf8.count + 3) / 4)
+        return max(1, (text.utf8.count + 2) / 3)
     }
 
     private static func priority(_ kind: ContextSegmentKind) -> Int {

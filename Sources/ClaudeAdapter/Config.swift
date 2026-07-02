@@ -44,7 +44,7 @@ public struct BridgeConfig: Sendable {
     ) -> BridgeConfig {
         let resolvedHost = host ?? env["AFM_BRIDGE_HOST"] ?? "127.0.0.1"
         let resolvedPort = port ?? env["AFM_BRIDGE_PORT"].flatMap(Int.init) ?? 8766
-        let token = authToken ?? env["AFM_BRIDGE_API_KEY"] ?? env["ANTHROPIC_AUTH_TOKEN"]
+        let token = authToken ?? env["AFM_BRIDGE_API_KEY"] ?? env["ANTHROPIC_API_KEY"] ?? env["ANTHROPIC_AUTH_TOKEN"]
         let levelString = logLevel ?? env["AFM_BRIDGE_LOG_LEVEL"] ?? "info"
         let level = Logger.Level(rawValue: levelString) ?? .info
         let dbg = debug || (env["AFM_BRIDGE_DEBUG"] == "1")

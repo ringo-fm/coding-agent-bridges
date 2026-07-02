@@ -286,22 +286,35 @@ public final class AFMRuntime: Sendable {
         options: GenerationOptions
     ) async throws -> AsyncThrowingStream<AFMStreamSnapshot, Error> {
         let session = makeSession(instructions: request.instructions)
-        let text: String
-        do {
-            let generated = try await session.respond(to: request.prompt, options: options).content
-            text = try Self.requireNonEmptyText(generated)
-        } catch is CancellationError {
-            throw BridgeError.generationCancelled
-        } catch let error as LanguageModelSession.GenerationError {
-            throw Self.map(error)
-        } catch {
-            throw BridgeError.generationFailed(String(describing: error))
-        }
+        let responseStream = session.streamResponse(to: request.prompt, options: options)
+        let box = AFMStreamBox(stream: responseStream, session: session)
         return AsyncThrowingStream { continuation in
-            if !text.isEmpty {
-                continuation.yield(AFMStreamSnapshot(cumulativeText: text, isFinal: true))
+            let task = Task {
+                var previous = ""
+                do {
+                    for try await snapshot in box.stream {
+                        try Task.checkCancellation()
+                        let current = snapshot.content
+                        if current != previous {
+                            continuation.yield(AFMStreamSnapshot(cumulativeText: current))
+                            previous = current
+                        }
+                    }
+                    if previous.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        continuation.finish(throwing: BridgeError.generationFailed("Apple Foundation Models returned an empty response"))
+                        return
+                    }
+                    continuation.yield(AFMStreamSnapshot(cumulativeText: previous, isFinal: true))
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish(throwing: BridgeError.generationCancelled)
+                } catch let error as LanguageModelSession.GenerationError {
+                    continuation.finish(throwing: Self.map(error))
+                } catch {
+                    continuation.finish(throwing: BridgeError.generationFailed(String(describing: error)))
+                }
             }
-            continuation.finish()
+            continuation.onTermination = { _ in task.cancel() }
         }
     }
 
@@ -358,5 +371,15 @@ public final class AFMRuntime: Sendable {
         case .cancelled: .generationCancelled
         case .generationFailed(let message): .generationFailed(message)
         }
+    }
+}
+
+private final class AFMStreamBox: @unchecked Sendable {
+    let stream: LanguageModelSession.ResponseStream<String>
+    let session: LanguageModelSession
+
+    init(stream: LanguageModelSession.ResponseStream<String>, session: LanguageModelSession) {
+        self.stream = stream
+        self.session = session
     }
 }

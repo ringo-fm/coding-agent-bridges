@@ -82,15 +82,14 @@ func handleMessages(
                 decisionContext: decisionContext
             )
             if result.hasToolCall, let name = result.toolName {
-                let (parsed, validationError) = ToolMapper.validateGeneratedToolCall(
+                let (parsed, _) = ToolMapper.validateGeneratedToolCall(
                     name: name,
                     argumentsJSON: result.toolArguments,
                     against: normalized.tools ?? []
                 )
                 guard let parsed else {
-                    let text = [result.text, ToolMapper.invalidToolCallText(validationError)].compactMap { $0 }.joined(separator: "\n\n")
                     return jsonResponse(OutputMapper.toTextMessage(
-                        model: normalized.model, text: text,
+                        model: normalized.model, text: result.text ?? "",
                         inputTokens: result.inputTokens, outputTokens: result.outputTokens, stopReason: "end_turn"
                     ))
                 }
@@ -159,10 +158,16 @@ private func streamText(
 
     let session = afm.newSession(instructions: instructions)
     var lastEmitted = ""
+    var lastKeepalive = ContinuousClock.now
 
     do {
         let stream = session.streamResponse(to: conversation, options: options)
         for try await snapshot in stream {
+            let now = ContinuousClock.now
+            if now - lastKeepalive >= .seconds(5) {
+                try await writer.write(SSEWriter.keepalive(allocator: allocator))
+                lastKeepalive = now
+            }
             let cumulative = snapshot.content
             let delta = DeltaStreamer.delta(previous: lastEmitted, current: cumulative)
             lastEmitted = cumulative
@@ -217,19 +222,15 @@ private func streamStructured(
 
         var stopReason = "end_turn"
         if let toolName {
-            let (parsed, validationError) = ToolMapper.validateGeneratedToolCall(name: toolName, argumentsJSON: toolArgs, against: tools)
+            let (parsed, _) = ToolMapper.validateGeneratedToolCall(name: toolName, argumentsJSON: toolArgs, against: tools)
             if let parsed {
                 let toolUseId = ToolMapper.makeToolUseID()
                 try await writer.write(SSEWriter.event("content_block_start", payload: ContentBlockStartEvent(index: blockIndex, toolUseId: toolUseId, toolName: parsed.name), allocator: allocator))
                 try await writer.write(SSEWriter.event("content_block_delta", payload: ContentBlockDeltaEvent(index: blockIndex, partialJson: parsed.argumentsJSON), allocator: allocator))
                 try await writer.write(SSEWriter.event("content_block_stop", payload: ContentBlockStopEvent(index: blockIndex), allocator: allocator))
                 stopReason = "tool_use"
-            } else {
-                try await writer.write(SSEWriter.event("content_block_start", payload: ContentBlockStartEvent(index: blockIndex), allocator: allocator))
-                try await writer.write(SSEWriter.event("content_block_delta", payload: ContentBlockDeltaEvent(index: blockIndex, text: ToolMapper.invalidToolCallText(validationError)), allocator: allocator))
-                try await writer.write(SSEWriter.event("content_block_stop", payload: ContentBlockStopEvent(index: blockIndex), allocator: allocator))
+                blockIndex += 1
             }
-            blockIndex += 1
         }
 
         if blockIndex == 0 {

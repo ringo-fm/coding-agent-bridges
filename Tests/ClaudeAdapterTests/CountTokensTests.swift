@@ -7,8 +7,8 @@ import Foundation
         #expect(TokenCounter.heuristic("hello world") >= 1)
     }
 
-    @Test func heuristicEmptyIsAtLeastOne() {
-        #expect(TokenCounter.heuristic("") == 1)
+    @Test func heuristicEmptyIsZero() {
+        #expect(TokenCounter.heuristic("") == 0)
     }
 
     @Test func heuristicOverestimatesForJapanese() {

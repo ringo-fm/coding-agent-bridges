@@ -12,6 +12,8 @@ public struct GatewayConfiguration: Sendable, Equatable {
     public var host: String
     public var port: Int
     public var authToken: String
+    /// When false the gateway accepts any bearer token. Safe on loopback-only bindings.
+    public var requiresAuth: Bool
     public var contextMode: ContextStorageMode
     public var contextPath: String?
     public var retentionDays: Int
@@ -21,6 +23,7 @@ public struct GatewayConfiguration: Sendable, Equatable {
         host: String = "127.0.0.1",
         port: Int = 8765,
         authToken: String = RingoRuntime.localToken,
+        requiresAuth: Bool = true,
         contextMode: ContextStorageMode = .memory,
         contextPath: String? = nil,
         retentionDays: Int = 30,
@@ -29,6 +32,7 @@ public struct GatewayConfiguration: Sendable, Equatable {
         self.host = host
         self.port = port
         self.authToken = authToken
+        self.requiresAuth = requiresAuth
         self.contextMode = contextMode
         self.contextPath = contextPath
         self.retentionDays = retentionDays
@@ -153,7 +157,7 @@ struct GatewayMiddleware: RouterMiddleware {
         let clock = ContinuousClock()
         let started = clock.now
         if shouldTrack { await telemetry.begin() }
-        if !bypass && !BridgeAuthorization.matches(headers: request.headers, expectedToken: config.authToken) {
+        if !bypass && config.requiresAuth && !BridgeAuthorization.matches(headers: request.headers, expectedToken: config.authToken) {
             if shouldTrack {
                 await telemetry.finish(
                     path: path, status: 401, latency: started.duration(to: clock.now), streaming: false

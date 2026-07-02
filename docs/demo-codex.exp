@@ -1,0 +1,41 @@
+#!/usr/bin/expect -f
+# ringo codex exec を使った非インタラクティブデモ録画
+
+set timeout 120
+log_user 1
+
+set env(TERM) "xterm-256color"
+set env(HOME) $env(HOME)
+
+set ringo "/Users/fu2hito/.local/bin/ringo"
+
+proc show_prompt {} {
+    send_user "\r\n\x1b\[1;32m❯\x1b\[0m "
+}
+
+proc type_chars {text} {
+    set i 0
+    foreach ch [split $text {}] {
+        send_user -- $ch
+        after [expr {60 + ($i % 4) * 15}]
+        incr i
+    }
+    after 300
+    send_user "\r\n"
+}
+
+# --- 質問 1 ---
+show_prompt
+type_chars {ringo codex -- exec "What is this repository about?"}
+
+spawn -noecho $ringo codex -- exec --sandbox read-only {What is this repository about? Give a one-paragraph summary.}
+expect eof
+
+after 1200
+
+# --- 質問 2 ---
+show_prompt
+type_chars {ringo codex -- exec "How do I get started with ringo?"}
+
+spawn -noecho $ringo codex -- exec --sandbox read-only {How do I get started with ringo? List the key commands.}
+expect eof

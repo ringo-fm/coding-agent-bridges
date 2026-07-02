@@ -7,6 +7,18 @@ This repository is the source of truth for the shared AFM runtime and protocol a
 - Codex through an OpenAI Responses API-compatible bridge
 - Claude Code through an Anthropic Messages API-compatible bridge
 
+## Demo
+
+**Codex**
+
+![ringo codex demo](docs/demo-codex.gif)
+
+**Claude Code**
+
+![ringo claude demo](docs/demo-claude.gif)
+
+> Run `bash docs/record-all-demos.sh` to regenerate these GIFs.
+
 ## Quick start
 
 The `ringo` launcher starts the required local bridge, waits for it to become

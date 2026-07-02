@@ -20,7 +20,7 @@ public final class FoundationModelsBackend: AgentModelBackend, Sendable {
     private let model: SystemLanguageModel
     private let sessionPool: AFMSessionPool
 
-    public init(sessionPoolConfiguration: AFMSessionPoolConfiguration = .init()) {
+    public init(sessionPoolConfiguration: AFMSessionPoolConfiguration = .auto()) {
         model = .default
         sessionPool = AFMSessionPool(model: model, configuration: sessionPoolConfiguration)
     }
@@ -66,6 +66,8 @@ public final class FoundationModelsBackend: AgentModelBackend, Sendable {
         let components = Self.render(request.messages)
         do {
             try Task.checkCancellation()
+            // Count input tokens concurrently with generation to reduce latency.
+            async let inputTokens = countTokens(components.instructions + "\n\n" + components.prompt)
             if !request.tools.isEmpty, request.toolChoice != .none {
                 var result = try await AFMToolExecution.generate(
                     model: model,
@@ -74,12 +76,11 @@ public final class FoundationModelsBackend: AgentModelBackend, Sendable {
                     prompt: components.prompt,
                     options: Self.options(request)
                 )
-                let inputTokens = await countTokens(components.instructions + "\n\n" + components.prompt)
                 let outputTokens = await countTokens(result.text + result.toolCalls.map(\.argumentsJSON).joined())
                 result = AgentGenerationResult(
                     text: result.text,
                     toolCalls: result.toolCalls,
-                    inputTokens: inputTokens,
+                    inputTokens: await inputTokens,
                     outputTokens: outputTokens
                 )
                 return result
@@ -101,11 +102,11 @@ public final class FoundationModelsBackend: AgentModelBackend, Sendable {
                 text = try await session.respond(to: components.prompt, options: Self.options(request)).content
             }
             try Task.checkCancellation()
-            let inputTokens = await countTokens(components.instructions + "\n\n" + components.prompt)
-            let outputTokens = await countTokens(text)
+            // Use heuristic for output tokens to avoid a second model call after generation
+            let outputTokens = ContextPlanner.estimateTokens(text)
             return AgentGenerationResult(
                 text: text,
-                inputTokens: inputTokens,
+                inputTokens: await inputTokens,
                 outputTokens: outputTokens
             )
         } catch is CancellationError {

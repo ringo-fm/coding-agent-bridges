@@ -5,9 +5,22 @@ public struct AFMSessionPoolConfiguration: Sendable, Equatable {
     public let maximumSessions: Int
     public let ttl: TimeInterval
 
-    public init(maximumSessions: Int = 32, ttl: TimeInterval = 1_800) {
+    public init(maximumSessions: Int, ttl: TimeInterval = 1_800) {
         self.maximumSessions = max(1, maximumSessions)
         self.ttl = max(1, ttl)
+    }
+
+    /// Picks pool size based on physical memory to avoid swap on low-spec machines.
+    public static func auto(ttl: TimeInterval = 1_800) -> AFMSessionPoolConfiguration {
+        let gb = ProcessInfo.processInfo.physicalMemory / (1024 * 1024 * 1024)
+        let sessions: Int
+        switch gb {
+        case ..<12:  sessions = 4
+        case 12..<24: sessions = 8
+        case 24..<48: sessions = 16
+        default:     sessions = 32
+        }
+        return AFMSessionPoolConfiguration(maximumSessions: sessions, ttl: ttl)
     }
 }
 
@@ -36,7 +49,7 @@ public actor AFMSessionPool {
 
     public init(
         model: SystemLanguageModel = .default,
-        configuration: AFMSessionPoolConfiguration = .init()
+        configuration: AFMSessionPoolConfiguration = .auto()
     ) {
         self.model = model
         self.configuration = configuration

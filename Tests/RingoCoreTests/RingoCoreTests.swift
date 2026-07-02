@@ -140,7 +140,7 @@ import HTTPTypes
         #expect(instructions.contains("/dashboard"))
         #expect(instructions.contains("ANTHROPIC_BASE_URL='http://127.0.0.1:8765/anthropic'"))
         #expect(instructions.contains("/openai/v1"))
-        #expect(instructions.contains("ANTHROPIC_AUTH_TOKEN='dev-token'"))
+        #expect(instructions.contains("ANTHROPIC_API_KEY='dev-token'"))
         #expect(instructions.contains("AFM_BRIDGE_API_KEY='dev-token'"))
     }
 
@@ -166,7 +166,6 @@ import HTTPTypes
             host: "127.0.0.1", port: 9000, environment: inherited
         )
 
-        #expect(claude.environment["ANTHROPIC_AUTH_TOKEN"] == "dev-token")
         #expect(claude.environment["ANTHROPIC_API_KEY"] == "dev-token")
         #expect(codex.environment["AFM_BRIDGE_API_KEY"] == "dev-token")
         #expect(gateway.authToken == "dev-token")
